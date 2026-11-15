@@ -1,0 +1,8 @@
+# Python 3.11 (chatterbox pins torch 2.6.0 on Python < 3.14).
+chatterbox-tts==0.1.7      # MIT, Resemble AI. Pulls torch/torchaudio 2.6.0, transformers 5.2.0, librosa 0.11.0, gradio (unused)
+setuptools<81              # Perth watermarker still imports pkg_resources
+fastapi
+uvicorn
+python-multipart
+pywebview==6.2.1           # macOS app window (desktop.py); pulls pyobjc Cocoa/WebKit/Quartz/Security
+# System: ffmpeg with libmp3lame for MP3 export (brew install ffmpeg)

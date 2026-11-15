@@ -1,0 +1,39 @@
+# Python / build
+.venv/
+__pycache__/
+*.pyc
+dist/
+*.tmp
+
+# Runtime data: your recordings, outputs, settings, logs (never commit)
+data/
+data_*/
+
+# Test artifacts (regenerate with tests/make_fixtures.py and the test scripts)
+tests/fixtures/
+tests/results/
+tests/screenshots/
+
+# Audio anywhere outside the docs
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.aiff
+
+# Local notes and assistant files
+CLAUDE.md
+PLAN.md
+.claude/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+node_modules/

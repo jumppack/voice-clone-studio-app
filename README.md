@@ -196,3 +196,7 @@ Only clone a voice you own or have explicit permission to use. The app asks you 
 
 - [Chatterbox](https://github.com/resemble-ai/chatterbox) by Resemble AI (MIT) for the speech model and the Perth watermarker.
 - [pywebview](https://pywebview.flowrl.com/) for the native macOS window.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Chatterbox and the other dependencies keep their own licenses.

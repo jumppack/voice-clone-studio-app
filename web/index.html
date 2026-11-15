@@ -183,8 +183,13 @@
     <div class="stack">
       <div class="card">
         <p class="small muted voice-src" id="voiceSrcLine" hidden></p>
+        <div class="lang-row">
+          <label class="field-label" for="langSel">Language</label>
+          <div class="well select-well lang-well"><select id="langSel" aria-describedby="langNote"><option value="en">English</option></select></div>
+        </div>
+        <p class="small muted lang-note" id="langNote" hidden></p>
         <label class="field-label" for="textIn">What should your voice say?</label>
-        <div class="well"><textarea id="textIn" rows="6" placeholder="Type or paste text. Long text is split into sentences automatically.">Welcome back! Today I want to show you something small that made a big difference for me. It only takes a minute, and you can try it right now.</textarea></div>
+        <div class="well"><textarea id="textIn" dir="auto" rows="6" placeholder="Type or paste text. Long text is split into sentences automatically.">Welcome back! Today I want to show you something small that made a big difference for me. It only takes a minute, and you can try it right now.</textarea></div>
         <p class="small muted" id="textStats"></p>
         <div class="len-box">
           <div class="len-head">

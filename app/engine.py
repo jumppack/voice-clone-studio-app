@@ -9,6 +9,11 @@ Checked against chatterbox-tts 0.1.7 (chatterbox/tts.py):
   * conds.t3.speaker_emb      VoiceEncoder 256-d, unit norm
   * conds.gen["embedding"]    CAMPPlus x-vector 192-d (norm ~14)
   * generate() hard-codes max_new_tokens=1000, so we call t3/s3gen ourselves with a cap.
+
+Languages (chatterbox/mtl_tts.py): every language except English uses the multilingual T3
+(t3_mtl23ls_v2.safetensors, text vocab 2454) with MTLTokenizer(language_id). Its s3gen.pt and ve.pt are
+tensor-for-tensor identical to the English s3gen/ve (checked), so the multilingual T3 shares the English
+model's s3gen, VoiceEncoder, watermarker and conditionals; only T3 + tokenizer are extra (~2.1 GB).
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from . import audio
+from .languages import CJK, DEFAULT_LANGUAGE, LANGUAGES, PREVIEW
 
 SR = 24000
 TOKENS_PER_S = 25  # S3 speech tokens per second of audio
@@ -49,6 +55,10 @@ PREVIEW_SENTENCES = [
 TARGET_MIN, TARGET_MAX = 5.0, 30.0
 OVERSHOOT_S = 1.0  # a sentence may end at most this far past the target (estimated)
 DEFAULT_CPS = 15.0  # characters of text per second of speech, until this voice has been measured
+MTL_FILES = ["t3_mtl23ls_v2.safetensors", "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json"]
+# Sentence ends: Latin/Greek/Cyrillic . ! ?, Hindi danda, Arabic question mark, CJK full-width marks.
+_SENT_END = r"(?<=[.!?।॥؟])\s+|(?<=[。！？])\s*"
+_SOFT_CUT = ("，", "、", "; ", ", ", "، ")
 MIN_WORDS = 4
 MAX_CHUNK_CHARS = 250
 CROSSFADE_S = 0.04
@@ -81,42 +91,66 @@ class GenParams:
         return p
 
 
-def split_text(text: str) -> list[str]:
+def word_count(text: str, lang: str = DEFAULT_LANGUAGE) -> int:
+    """Words, or for Chinese/Japanese (no spaces) about one word per 2 characters."""
+    if lang in CJK:
+        return len(re.sub(r"[\s\W_]", "", text)) // 2
+    return len(text.split())
+
+
+def split_text(text: str, lang: str = DEFAULT_LANGUAGE) -> list[str]:
     """Sentence chunks of <= ~250 chars. Very short sentences are merged with a neighbour
     because Chatterbox clips or garbles lines under ~4 words."""
     text = " ".join(text.split())
     if not text:
         return []
-    sents = re.split(r"(?<=[.!?])\s+", text)
+    sents = [x for x in re.split(_SENT_END, text) if x and x.strip()]
     pieces: list[str] = []
     for s in sents:
-        while len(s) > MAX_CHUNK_CHARS:  # split long sentences at a comma or space
-            cut = max(s.rfind(", ", 0, MAX_CHUNK_CHARS), s.rfind("; ", 0, MAX_CHUNK_CHARS))
+        while len(s) > MAX_CHUNK_CHARS:  # split long sentences at a comma, else a space, else hard
+            cut = max(s.rfind(c, 0, MAX_CHUNK_CHARS) for c in _SOFT_CUT)
             if cut < 60:
                 cut = s.rfind(" ", 0, MAX_CHUNK_CHARS)
-            cut = cut if cut > 0 else MAX_CHUNK_CHARS
+            cut = cut if cut > 0 else MAX_CHUNK_CHARS - 1
             pieces.append(s[: cut + 1].strip())
             s = s[cut + 1 :].strip()
         if s:
-            pieces.append(s)
+            pieces.append(s.strip())
+    wc = lambda x: word_count(x, lang)  # noqa: E731
+    joiner = "" if lang in CJK else " "
     chunks: list[str] = []
     for p in pieces:
-        if chunks and (len(p.split()) < MIN_WORDS or len(chunks[-1].split()) < MIN_WORDS) \
+        if chunks and (wc(p) < MIN_WORDS or wc(chunks[-1]) < MIN_WORDS) \
                 and len(chunks[-1]) + len(p) + 1 <= MAX_CHUNK_CHARS:
-            chunks[-1] = chunks[-1] + " " + p
+            chunks[-1] = chunks[-1] + joiner + p
         else:
             chunks.append(p)
-    if len(chunks) > 1 and len(chunks[-1].split()) < MIN_WORDS:
+    if len(chunks) > 1 and wc(chunks[-1]) < MIN_WORDS:
         last = chunks.pop()
-        chunks[-1] += " " + last
+        chunks[-1] += joiner + last
     return chunks
 
 
-def token_cap(chunk: str) -> int:
-    """Generous upper bound on speech tokens: slow speech is ~1.6 words/s; x1.6 headroom."""
-    words = max(MIN_WORDS, len(chunk.split()))
-    est_s = words / 1.6 + 1.0
+def token_cap(chunk: str, lang: str = DEFAULT_LANGUAGE) -> int:
+    """Generous upper bound on speech tokens: slow speech is ~1.6 words/s (or, by characters, about
+    half the language's usual pace); x1.6 headroom."""
+    words = max(MIN_WORDS, word_count(chunk, lang))
+    est_s = max(words / 1.6, len(chunk) / (LANGUAGES[lang][2] * 0.5)) + 1.0
     return int(min(1000, est_s * 1.6 * TOKENS_PER_S + 25))
+
+
+def preview_sentences(lang: str) -> list[str]:
+    return PREVIEW_SENTENCES if lang == "en" else PREVIEW[lang]
+
+
+def mtl_weights_present() -> bool:
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        return all(isinstance(v := try_to_load_from_cache("ResembleAI/chatterbox", f), str) and Path(v).exists()
+                   for f in MTL_FILES)
+    except Exception:
+        return False
 
 
 def crossfade_join(parts: list[np.ndarray], sr: int = SR, fade_s: float = CROSSFADE_S) -> np.ndarray:
@@ -144,6 +178,8 @@ def _trim_chunk(x: np.ndarray, sr: int = SR) -> np.ndarray:
 class Engine:
     def __init__(self, cache_dir: Path):
         self.model = None
+        self.mtl = None  # multilingual T3 + tokenizer, sharing self.model's s3gen/ve (loaded on first use)
+        self.mtl_state = "not_loaded"
         self.device = None
         self.lock = threading.Lock()
         self.state = "not_loaded"  # not_loaded | loading | ready | error
@@ -154,10 +190,27 @@ class Engine:
         self._ref_embed_cache: dict[str, np.ndarray] = {}
         self.rtf = 1.7  # updated after each generation
         self._rate_file = cache_dir / "speech_rate.json"
+        self.cps_by_lang: dict[str, float] = {}  # measured pace per language (chars/s)
         try:
-            self.cps = float(json.loads(self._rate_file.read_text())["cps"])
-        except (OSError, ValueError, KeyError, TypeError):
-            self.cps = DEFAULT_CPS
+            r = json.loads(self._rate_file.read_text())
+            if "cps" in r:
+                self.cps_by_lang["en"] = float(r["cps"])
+            self.cps_by_lang.update({k: float(v) for k, v in r.get("by_lang", {}).items() if k in LANGUAGES})
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+
+    @property
+    def cps(self) -> float:  # English pace (kept for the old API field)
+        return self.rate("en")
+
+    def rate(self, lang: str) -> float:
+        return self.cps_by_lang.get(lang, LANGUAGES[lang][2])
+
+    def _save_rate(self):
+        try:
+            self._rate_file.write_text(json.dumps({"cps": self.rate("en"), "by_lang": self.cps_by_lang}))
+        except OSError:
+            pass
 
     # ---------- loading ----------
     def load(self):
@@ -181,6 +234,38 @@ class Engine:
             except Exception as e:  # surfaced in the setup screen
                 self.state, self.error = "error", f"{type(e).__name__}: {e}"
                 raise
+
+    def load_mtl(self):
+        """Multilingual T3 + tokenizer. Reuses the English model's s3gen, VoiceEncoder and conds."""
+        self.load()
+        if self.mtl is not None:
+            return
+        with self.lock:
+            if self.mtl is not None:
+                return
+            if not mtl_weights_present():
+                raise RuntimeError("The multilingual model isn't downloaded yet. Get it on the Setup screen.")
+            self.mtl_state = "loading"
+            try:
+                from huggingface_hub import try_to_load_from_cache
+                from safetensors.torch import load_file
+                from chatterbox.models.t3 import T3
+                from chatterbox.models.t3.modules.t3_config import T3Config
+                from chatterbox.models.tokenizers import MTLTokenizer
+                from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+
+                f = lambda n: try_to_load_from_cache("ResembleAI/chatterbox", n)  # noqa: E731
+                t3 = T3(T3Config.multilingual())
+                st = load_file(f("t3_mtl23ls_v2.safetensors"))
+                t3.load_state_dict(st["model"][0] if "model" in st else st)
+                t3.to(self.device).eval()
+                tok = MTLTokenizer(f("grapheme_mtl_merged_expanded_v1.json"))
+                m = self.model
+                self.mtl = ChatterboxMultilingualTTS(t3, m.s3gen, m.ve, tok, self.device, conds=m.conds)
+                self.mtl_state = "ready"
+            except Exception as e:
+                self.mtl_state = "error"
+                raise RuntimeError(f"Couldn't load the multilingual model: {type(e).__name__}: {e}") from e
 
     def load_async(self):
         threading.Thread(target=lambda: self._safe(self.load), daemon=True).start()
@@ -272,47 +357,59 @@ class Engine:
                 "prompt_feat": feat}
 
     # ---------- generation ----------
-    def _gen_chunk(self, conds, text: str, p: GenParams, seed: int | None) -> tuple[np.ndarray, dict]:
+    def _gen_chunk(self, conds, text: str, p: GenParams, seed: int | None,
+                   lang: str = DEFAULT_LANGUAGE) -> tuple[np.ndarray, dict]:
         import torch
         import torch.nn.functional as F
         from chatterbox.models.s3tokenizer import drop_invalid_tokens
         from chatterbox.models.t3.modules.cond_enc import T3Cond
-        from chatterbox.tts import punc_norm
 
-        m = self.model
+        mtl = lang != "en"
+        if mtl:
+            from chatterbox.mtl_tts import punc_norm
+        else:
+            from chatterbox.tts import punc_norm
+        m = self.mtl if mtl else self.model
         if seed is not None:
             torch.manual_seed(seed)
             np.random.seed(seed % (2**32))
         t3c = T3Cond(speaker_emb=conds.t3.speaker_emb, cond_prompt_speech_tokens=conds.t3.cond_prompt_speech_tokens,
                      emotion_adv=p.exaggeration * torch.ones(1, 1, 1)).to(device=self.device)
-        tt = m.tokenizer.text_to_tokens(punc_norm(text)).to(self.device)
+        tt = (m.tokenizer.text_to_tokens(punc_norm(text), language_id=lang) if mtl
+              else m.tokenizer.text_to_tokens(punc_norm(text))).to(self.device)
         tt = torch.cat([tt, tt], dim=0)  # CFG needs two rows (cfg_weight is always > 0 here)
         tt = F.pad(tt, (1, 0), value=m.t3.hp.start_text_token)
         tt = F.pad(tt, (0, 1), value=m.t3.hp.stop_text_token)
-        cap = token_cap(text)
+        cap = token_cap(text, lang)
         with torch.inference_mode():
             st = m.t3.inference(t3_cond=t3c, text_tokens=tt, max_new_tokens=cap, temperature=p.temperature,
-                                cfg_weight=p.cfg_weight, repetition_penalty=1.2, min_p=0.05, top_p=1.0)
+                                cfg_weight=p.cfg_weight, repetition_penalty=2.0 if mtl else 1.2,  # each model's own default
+                                min_p=0.05, top_p=1.0)
             n_raw = int(st.shape[-1])
             st = drop_invalid_tokens(st[0])
             st = st[st < 6561].to(self.device)
             wav, _ = m.s3gen.inference(speech_tokens=st, ref_dict=conds.gen)
             wav = wav.squeeze(0).detach().cpu().numpy()
-        wav = m.watermarker.apply_watermark(wav, sample_rate=SR)  # Perth watermark, kept on purpose
+        wav = self.model.watermarker.apply_watermark(wav, sample_rate=SR)  # Perth watermark, kept on purpose
         return np.asarray(wav, np.float32), {"tokens": n_raw, "cap": cap, "hit_cap": n_raw >= cap}
 
     def generate(self, text: str, voice_ref: Path, style_ref: Path, p: GenParams, progress=None,
-                 target: float | None = None, sentences: list[str] | None = None) -> tuple[np.ndarray, dict]:
+                 target: float | None = None, sentences: list[str] | None = None,
+                 lang: str = DEFAULT_LANGUAGE) -> tuple[np.ndarray, dict]:
         """Speak `text` (split into sentence chunks), or pick from `sentences` (preview passage).
 
         target (5-30 s): sentences are taken in order while each one brings the total closer to the
         target; user text is never reordered (the rest is reported as not spoken), the preview
         passage may skip a sentence that would overshoot. Length comes only from how much text is
         spoken; the audio itself is never stretched."""
+        if lang not in LANGUAGES:
+            raise ValueError(f"Unsupported language: {lang}")
         self.load()
+        if lang != "en":
+            self.load_mtl()
         pool = sentences is not None
-        chunks = list(sentences) if pool else split_text(text)
-        if not chunks or (not pool and len(text.split()) < MIN_WORDS):
+        chunks = list(sentences) if pool else split_text(text, lang)
+        if not chunks or (not pool and word_count(text, lang) < MIN_WORDS):
             raise ValueError(f"Please type at least {MIN_WORDS} words.")
         t0 = time.time()
         with self.lock:
@@ -321,7 +418,7 @@ class Engine:
             remaining, cum, chars_done = list(chunks), 0.0, 0
 
             def cps_now():  # this run's measured pace, blended with the voice's history
-                return (chars_done / cum * 0.7 + self.cps * 0.3) if cum > 0 else self.cps
+                return (chars_done / cum * 0.7 + self.rate(lang) * 0.3) if cum > 0 else self.rate(lang)
 
             def pick(total, rem, rate):
                 if target is None:
@@ -345,9 +442,9 @@ class Engine:
             while (j := pick(cum, remaining, cps_now())) is not None:
                 ch = remaining.pop(j)
                 seed = None if p.seed is None else p.seed + i
-                w, meta = self._gen_chunk(conds, ch, p, seed)
+                w, meta = self._gen_chunk(conds, ch, p, seed, lang)
                 if meta["hit_cap"]:  # degenerate run: one retry with another seed
-                    w2, meta2 = self._gen_chunk(conds, ch, p, None if seed is None else seed + 1000)
+                    w2, meta2 = self._gen_chunk(conds, ch, p, None if seed is None else seed + 1000, lang)
                     if not meta2["hit_cap"] or len(w2) < len(w):
                         w, meta = w2, {**meta2, "retried": True}
                 w = _trim_chunk(w)
@@ -363,15 +460,14 @@ class Engine:
         dur = len(out) / SR
         if dur > 0:
             self.rtf = 0.5 * self.rtf + 0.5 * (el / dur)
-            self.cps = round(0.5 * self.cps + 0.5 * (chars_done / dur), 2) if self.cps != DEFAULT_CPS else round(chars_done / dur, 2)
-            try:
-                self._rate_file.write_text(json.dumps({"cps": self.cps}))
-            except OSError:
-                pass
-        spoken = " ".join(c["text"] for c in info)
+            now = chars_done / dur
+            old = self.cps_by_lang.get(lang)
+            self.cps_by_lang[lang] = round(now if old is None else 0.5 * old + 0.5 * now, 2)
+            self._save_rate()
+        spoken = ("" if lang in CJK else " ").join(c["text"] for c in info)
         return out, {"chunks": info, "seconds": round(dur, 2), "elapsed": round(el, 1),
                      "rtf": round(el / max(dur, 1e-3), 2), "target": target, "text": spoken,
-                     "unspoken": 0 if pool else len(remaining), "cps": self.cps}
+                     "unspoken": 0 if pool else len(remaining), "cps": self.rate(lang), "language": lang}
 
     # ---------- similarity ----------
     def embed(self, x: np.ndarray, sr: int) -> np.ndarray:
@@ -393,11 +489,12 @@ class Engine:
         """Cosine similarity (VoiceEncoder) between generated audio and the user's ORIGINAL take."""
         return float(np.dot(self.embed(x, SR), self.ref_embed(ref_path)))
 
-    def speech_seconds(self, text: str) -> float:
-        """Expected length of the spoken audio, from this voice's measured pace."""
-        return len(" ".join(text.split())) / self.cps
+    def speech_seconds(self, text: str, lang: str = DEFAULT_LANGUAGE) -> float:
+        """Expected length of the spoken audio, from this voice's measured pace in that language."""
+        return len(" ".join(text.split())) / self.rate(lang)
 
-    def estimate_seconds(self, text: str, target: float | None = None) -> float:
+    def estimate_seconds(self, text: str, target: float | None = None, lang: str = DEFAULT_LANGUAGE) -> float:
         """Expected wall-clock time for a generation."""
-        audio_s = self.speech_seconds(text) if target is None else min(target, self.speech_seconds(text))
+        sp = self.speech_seconds(text, lang)
+        audio_s = sp if target is None else min(target, sp)
         return round(audio_s * self.rtf + 2.0, 1)

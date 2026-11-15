@@ -20,7 +20,10 @@ from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 
 from . import audio
-from .engine import PREVIEW_SENTENCES, SR, TARGET_MAX, TARGET_MIN, Engine, GenParams, split_text
+from .engine import (MTL_FILES, SR, TARGET_MAX, TARGET_MIN, Engine, GenParams, mtl_weights_present,
+                     preview_sentences, split_text, word_count)
+from .languages import CJK, DEFAULT_LANGUAGE, LANGUAGES
+from .languages import listing as language_listing
 from .scripts import MIN_TAKES, STEPS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,11 +135,15 @@ INSTALL_CMDS = {
     "weights": [str(ROOT / ".venv/bin/python"), "-c",
                 "from huggingface_hub import hf_hub_download as d;"
                 + "".join(f"d('ResembleAI/chatterbox','{f}');" for f in MODEL_FILES)],
+    "mtl_weights": [str(ROOT / ".venv/bin/python"), "-c",
+                    "from huggingface_hub import hf_hub_download as d;"
+                    + "".join(f"d('ResembleAI/chatterbox','{f}');" for f in MTL_FILES)],
     "ffmpeg": ["brew", "install", "ffmpeg"],
 }
 INSTALL_INFO = {
     "packages": "Python packages from pypi.org (~1.1 GB on disk)",
     "weights": "Chatterbox model weights from huggingface.co (~3.2 GB)",
+    "mtl_weights": "Multilingual Chatterbox model from huggingface.co (~2.2 GB), for the 22 languages besides English",
     "ffmpeg": "ffmpeg via Homebrew (~60 MB), needed for MP3 export",
 }
 
@@ -162,13 +169,17 @@ def setup_status():
             {"id": "weights", "name": "Voice model weights", "ok": w["ok"],
              "detail": f"{w['bytes'] / 1e9:.2f} GB in the local Hugging Face cache" if w["ok"] else "not downloaded",
              "size": "~3.2 GB", "command": None if w["ok"] else "download ResembleAI/chatterbox from huggingface.co"},
+            {"id": "mtl_weights", "name": "Other languages", "ok": mtl_weights_present(), "optional": True,
+             "detail": "multilingual model ready: Hindi, Spanish, Chinese and 19 more" if mtl_weights_present()
+             else "optional: needed only to speak languages other than English", "size": "~2.2 GB",
+             "command": None if mtl_weights_present() else "download the multilingual model from huggingface.co"},
             {"id": "ffmpeg", "name": "ffmpeg (for MP3)", "ok": bool(ff) and audio.has_mp3lame(ff),
              "detail": ff or "not found", "size": "~60 MB", "command": None if ff else "brew install ffmpeg"},
         ],
         "engine": {"state": engine.state, "error": engine.error, "device": str(engine.device) if engine.device else None,
                    "load_seconds": engine.load_seconds},
         "settings": {"consent": bool(s.get("consent")), "watermark_ack": bool(s.get("watermark_ack")),
-                     "voice_source": s.get("voice_source")},
+                     "voice_source": s.get("voice_source"), "language": s.get("language", DEFAULT_LANGUAGE)},
         "installs": installs,
     }
 
@@ -183,8 +194,8 @@ def setup_install(item: str = Form(...), confirm: bool = Form(False)):
     if installs.get(item, {}).get("state") == "running":
         return installs[item]
     env = dict(os.environ)
-    if item == "weights":
-        env.pop("HF_HUB_OFFLINE", None)  # the one approved network use
+    if item in ("weights", "mtl_weights"):
+        env.pop("HF_HUB_OFFLINE", None)  # the approved model download is the only network use
     rec = installs[item] = {"state": "running", "log": "", "command": " ".join(cmd)}
 
     def run():
@@ -203,11 +214,16 @@ def setup_install(item: str = Form(...), confirm: bool = Form(False)):
 
 
 @app.post("/api/settings")
-def save_settings(consent: bool = Form(None), watermark_ack: bool = Form(None), voice_source: str = Form(None)):
+def save_settings(consent: bool = Form(None), watermark_ack: bool = Form(None), voice_source: str = Form(None),
+                  language: str = Form(None)):
     if voice_source is not None and voice_source not in ("record", "upload"):
         raise HTTPException(400, "voice_source must be record or upload")
+    if language is not None and language not in LANGUAGES:
+        raise HTTPException(400, "unknown language")
 
     def upd(s):
+        if language is not None:
+            s["language"] = language
         if voice_source is not None:
             s["voice_source"] = voice_source
         if consent is not None:
@@ -379,7 +395,8 @@ def del_preset(pid: str):
 
 # ---------------- generation ----------------
 @app.post("/api/generate")
-def generate(text: str = Form(""), params: str = Form("{}"), preview: bool = Form(False), target: float = Form(0)):
+def generate(text: str = Form(""), params: str = Form("{}"), preview: bool = Form(False), target: float = Form(0),
+             language: str = Form(DEFAULT_LANGUAGE)):
     """target = length in seconds (5-30) or 0 for 'speak the whole text'. A preview always has a
     target (default 5 s) and is built from the built-in preview passage."""
     prof = profile()
@@ -387,24 +404,34 @@ def generate(text: str = Form(""), params: str = Form("{}"), preview: bool = For
         raise HTTPException(400, f"Record at least {MIN_TAKES} takes first.")
     if target and not TARGET_MIN <= target <= TARGET_MAX:
         raise HTTPException(400, f"Length must be between {TARGET_MIN:g} and {TARGET_MAX:g} seconds.")
+    lang = language
+    if lang not in LANGUAGES:
+        raise HTTPException(400, f"Unsupported language: {lang}")
+    if lang != "en" and not mtl_weights_present():
+        raise HTTPException(400, "Speaking languages other than English needs the multilingual model. "
+                                 "Download it on the Setup screen (Other languages).")
     tgt = float(target) if target else (TARGET_MIN if preview else None)
-    text = " ".join(PREVIEW_SENTENCES) if preview else text.strip()
-    if len(text.split()) < 4:
+    pool = preview_sentences(lang)
+    text = ("" if lang in CJK else " ").join(pool) if preview else text.strip()
+    if word_count(text, lang) < 4:
         raise HTTPException(400, "Please type at least 4 words. Very short lines come out clipped.")
     if len(text) > 5000:
         raise HTTPException(400, "That's a lot of text. Please keep it under 5,000 characters per run.")
     p = GenParams.from_dict(json.loads(params))
     vref, sref = take_path(prof["voice_take"]), take_path(prof["style_take"])
     jid = uuid.uuid4().hex[:10]
-    n = len(split_text(text))
+    n = len(split_text(text, lang))
     job = jobs[jid] = {"id": jid, "state": "queued", "done": 0, "total": n, "elapsed": 0.0,
-                       "estimate": engine.estimate_seconds(text, tgt) + (40 if engine.state != "ready" else 0),
-                       "preview": preview, "text": text, "target": tgt, "params": p.__dict__}
+                       "estimate": engine.estimate_seconds(text, tgt, lang) + (40 if engine.state != "ready" else 0)
+                       + (10 if lang != "en" and engine.mtl is None else 0),
+                       "preview": preview, "text": text, "target": tgt, "params": p.__dict__, "language": lang}
 
     def run():
         try:
-            job["state"] = "loading" if engine.state != "ready" else "running"
+            job["state"] = "loading" if engine.state != "ready" or (lang != "en" and engine.mtl is None) else "running"
             engine.load()
+            if lang != "en":
+                engine.load_mtl()
             job["state"] = "running"
             t0 = time.time()
 
@@ -412,7 +439,7 @@ def generate(text: str = Form(""), params: str = Form("{}"), preview: bool = For
                 job.update(done=i, total=total, elapsed=round(time.time() - t0, 1))
 
             wav, info = engine.generate(text, vref, sref, p, progress=prog, target=tgt,
-                                        sentences=PREVIEW_SENTENCES if preview else None)
+                                        sentences=pool if preview else None, lang=lang)
             job["text"] = info["text"]
             path = OUT / f"{jid}.wav"
             audio.write_wav(path, wav, SR)
@@ -488,8 +515,21 @@ def export(output_id: str = Form(...), fmt: str = Form("wav"), bitrate: int = Fo
 
 
 @app.get("/api/speech-rate")
-def speech_rate():
-    return {"cps": engine.cps, "min": TARGET_MIN, "max": TARGET_MAX}
+def speech_rate(language: str = DEFAULT_LANGUAGE):
+    lang = language if language in LANGUAGES else DEFAULT_LANGUAGE
+    return {"cps": engine.rate(lang), "language": lang, "min": TARGET_MIN, "max": TARGET_MAX}
+
+
+@app.get("/api/languages")
+def languages():
+    """Languages, whether the multilingual model is downloaded, and a sample text for each."""
+    have = mtl_weights_present()
+    out = []
+    for item in language_listing():
+        pool = preview_sentences(item["code"])
+        out.append({**item, "available": item["code"] == "en" or have, "cps": engine.rate(item["code"]),
+                    "sample": ("" if item["cjk"] else " ").join(pool[:3])})
+    return {"languages": out, "multilingual_ready": have, "default": DEFAULT_LANGUAGE}
 
 
 @app.on_event("startup")

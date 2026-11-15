@@ -19,6 +19,7 @@ Every clip carries Chatterbox's inaudible **Perth watermark**, so detection tool
 - **Or skip recording:** upload any WAV or MP3 of one person talking. The app cuts it into clean clips, drops parts that sound like a different speaker, and takes you straight to the Studio.
 - **Controls that really work:** every slider was measured to change the output (see the [table below](#controls)). There are no placebo sliders.
 - **Honest audio:** all voice changes happen *before* generation. The generated speech is never pitch-shifted or run through effects afterwards.
+- **23 languages:** English plus Hindi, Spanish, French, German, Chinese, Japanese, Arabic and 15 more, in your own voice (optional extra download).
 - **Choose the length:** speak your whole text, or aim for 5–30 seconds. The app picks whole sentences and never time-stretches the audio.
 - **Export:** WAV (24 kHz, 16-bit) or MP3 (128–320 kbps), saved wherever you choose.
 
@@ -32,6 +33,10 @@ Every clip carries Chatterbox's inaudible **Perth watermark**, so detection tool
 |---|---|
 | ![Voice](docs/screenshots/voice.png) | ![Studio, dark mode](docs/screenshots/studio_dark.png) |
 
+| Studio speaking Hindi |
+|---|
+| ![Studio with Hindi selected](docs/screenshots/studio_hindi.jpg) |
+
 *Screenshots come from the automated UI test and use synthetic macOS `say` voices and a simulated microphone.*
 
 ## What you need to install
@@ -44,6 +49,7 @@ Every clip carries Chatterbox's inaudible **Perth watermark**, so detection tool
 | ffmpeg with libmp3lame (MP3 export and decoding uploaded MP3s) | `brew install ffmpeg` | ~60 MB |
 | Python packages from `requirements.txt`: `chatterbox-tts` 0.1.7 (pulls PyTorch 2.6, torchaudio, transformers, librosa, gradio, which is never imported), FastAPI, uvicorn, python-multipart, pywebview 6.2.1 (only for the macOS app) | PyPI | ~1 GB in `.venv` |
 | Chatterbox model weights (`ResembleAI/chatterbox`) | huggingface.co | ~3.2 GB in `~/.cache/huggingface` |
+| *Optional:* multilingual model for the 22 languages besides English (`t3_mtl23ls_v2.safetensors` + tokenizer files, same repo) | huggingface.co | ~2.2 GB |
 | Node.js (only to run the headless-Chrome UI test) | [nodejs.org](https://nodejs.org) | optional |
 
 ## Install
@@ -61,6 +67,12 @@ To use pip instead: `python3.11 -m venv .venv && .venv/bin/pip install -r requir
 
 ```bash
 HF_HUB_DISABLE_TELEMETRY=1 .venv/bin/python -c "from huggingface_hub import hf_hub_download as d; [d('ResembleAI/chatterbox', f) for f in ['ve.safetensors','t3_cfg.safetensors','s3gen.safetensors','tokenizer.json','conds.pt']]"
+```
+
+**Other languages (optional):** the Setup screen's **Other languages** item downloads the multilingual model after you confirm, or run:
+
+```bash
+HF_HUB_DISABLE_TELEMETRY=1 .venv/bin/python -c "from huggingface_hub import hf_hub_download as d; [d('ResembleAI/chatterbox', f) for f in ['t3_mtl23ls_v2.safetensors','grapheme_mtl_merged_expanded_v1.json','Cangjie5_TC.json']]"
 ```
 
 After that, the app runs fully offline (`HF_HUB_OFFLINE=1`).
@@ -105,6 +117,7 @@ The app is a native window (WKWebView via pywebview) that starts the same backen
    - Audio is captured raw at 48 kHz, with echo cancellation, noise suppression and auto gain all off.
 3. **Voice.** Choose which take sets the **voice** and which sets the **style**. The best-scoring take is picked by default.
 4. **Studio.**
+   - Pick a **Language** (English by default). The other 22 languages appear once the multilingual model is downloaded. Your voice can come from a recording in any language, but a recording in the target language usually sounds most natural.
    - Type what your voice should say.
    - Choose **Whole text** or **Set length** (5–30 s).
    - Press **Preview** for a quick built-in passage, or **Generate** for your text.
@@ -141,6 +154,22 @@ For reference, a different speaker scores about 0.61 similarity.
 
 Side effects: depth at ±3 st lowers similarity to about 0.7, and expressiveness 1.5 lowers it to 0.84.
 
+### Other languages (multilingual model)
+
+Measured the same way (`tests/measure_controls.py hi`, `... es cfg_weight,exaggeration`):
+
+| Control (low → high) | Metric | Hindi | Spanish |
+|---|---|---|---|
+| Similarity 50 % → 100 % | Speaker similarity | 0.762 → 0.912 | |
+| Voice depth −3 → +3 st | Median pitch | 98 → 136 Hz | |
+| Variation 0.4 → 1.2 | Run-to-run difference | 36.9 → 50.0 | |
+| Pacing 0.2 → 0.8 | Words per second | 2.78 → 2.90 (small) | 2.38 → 2.69 |
+| Expressiveness 0.25 → 1.5 | Pitch spread / median pitch | 3.66 → 3.10 st / 117 → 123 Hz (small) | 2.84 → 4.16 st / 112 → 119 Hz |
+
+In Hindi, Pacing and Expressiveness change the output only a little, and the Studio says so next to those sliders when Hindi is selected. A fixed seed is bit-identical in every language.
+
+A 10 s preview in each of the 23 languages (`tests/languages_test.py all`, synthetic English reference voice) came out between 8.4 and 12.1 s, with similarity 0.91–0.95 and no degenerate chunks. On a language's first run, its starting pace guess can be off by a second or two; the estimate is re-learned after each generation.
+
 ## Project layout
 
 ```
@@ -152,6 +181,7 @@ Side effects: depth at ±3 st lowers similarity to about 0.7, and expressiveness
 │   ├── server.py     # FastAPI routes: setup, takes, upload, profile, presets, generate jobs, export
 │   ├── engine.py     # Chatterbox wrapper: conditioning, sentence chunking, length targeting, similarity
 │   ├── audio.py      # take analysis, trimming, upload decoding/splitting, MP3 via ffmpeg
+│   ├── languages.py  # the 23 languages, their preview passages and starting pace
 │   └── scripts.py    # the six recording scripts
 ├── web/              # index.html, styles.css, app.js, recorder-worklet.js
 ├── docs/screenshots/
@@ -170,6 +200,7 @@ Then run the tests:
 
 ```bash
 HF_HUB_OFFLINE=1 .venv/bin/python tests/cli_smoke.py           # take analysis + one generation
+HF_HUB_OFFLINE=1 .venv/bin/python tests/languages_test.py all  # a 10 s preview in each of the 23 languages
 VCS_DATA=$PWD/data_test PORT=7862 NO_BROWSER=1 ./run.sh &       # test server on a separate data folder
 VCS_DATA=$PWD/data_test PORT=7862 tests/api_e2e.sh             # takes → previews → exports (ffprobe)
 VCS_DATA=$PWD/data_test PORT=7862 .venv/bin/python tests/upload_e2e.py
@@ -182,7 +213,7 @@ Always point the API tests at a separate `VCS_DATA` folder, because they replace
 
 ## Known limits
 
-- English only.
+- **Languages:** the recording scripts are English, but you can upload a recording in any language. Hebrew is spoken without vowel marks and Russian without stress marks, because their optional helper packages aren't installed, which may affect pronunciation. Pronunciation hasn't been checked by a native speaker or a speech recognizer; only length, similarity and stability were measured.
 - One generation at a time. The first preview after start waits for the model to load (about 10–40 s).
 - Developed and measured with synthetic voices. How close it sounds to *your* voice is best judged by listening.
 - The upload speaker check keeps whoever speaks most in the file, so use a recording that is mostly the target speaker.

@@ -1,4 +1,5 @@
 """CLI smoke test: analyse fixture takes, generate one sentence, report similarity."""
+import tempfile
 import os, sys, time
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 from pathlib import Path
@@ -22,7 +23,7 @@ print("noisy", [i["kind"] for i in audio.analyze_take(x + rng.normal(0, 0.02, le
 print("quiet", [i["kind"] for i in audio.analyze_take(x * 0.01 + rng.normal(0, 1e-4, len(x)).astype(np.float32), sr)["issues"]])
 print("short", [i["kind"] for i in audio.analyze_take(x[: 4 * sr], sr)["issues"]])
 
-e = Engine(Path("data/cache"))
+e = Engine(Path(tempfile.mkdtemp()))  # temp cache: never touches data/
 t = time.time(); e.load(); print("load s", round(time.time() - t, 1))
 ref = F / "daniel_take1_room.wav"
 out, info = e.generate("This is a quick test of the cloned voice, running on the local graphics chip.", ref, ref, GenParams(seed=1))

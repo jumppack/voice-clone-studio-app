@@ -360,3 +360,9 @@ input[type="range"]:focus-visible { outline: 3px solid var(--focus); outline-off
 .voice-src { margin: 0 0 10px; }
 .voice-src a { color: var(--primary); font-weight: 700; }
 @media (max-width: 860px) { .source-choices { grid-template-columns: 1fr; } }
+
+/* language picker (Studio) */
+.lang-row { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
+.lang-row .field-label { margin: 0; }
+.lang-well { flex: 1 1 220px; max-width: 320px; }
+.lang-note { margin: 0 0 14px; }

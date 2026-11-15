@@ -1,4 +1,5 @@
 """60-word generation: wall time, real-time factor, peak memory."""
+import tempfile
 import os, sys, time, resource, json
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 from pathlib import Path
@@ -10,7 +11,7 @@ F = Path(__file__).parent / "fixtures"; REF = F / "daniel_take1_room.wav"
 TEXT = ("Every great trip starts with a small decision. Maybe you pick a road you have never driven, or you say yes to a "
         "friend who wants to see the mountains. Along the way, plans change, the weather turns, and the best moments are "
         "the ones that nobody planned. So pack light, stay curious, and leave a little room for surprises.")
-e = Engine(Path("data/cache")); e.load()
+e = Engine(Path(tempfile.mkdtemp()))  # temp cache: never touches data/; e.load()
 e.generate("Warming up the engine with a short sentence.", REF, REF, GenParams(seed=0))
 t = time.time()
 x, info = e.generate(TEXT, REF, REF, GenParams(seed=3))

@@ -1,0 +1,276 @@
+"""Languages the Studio can speak.
+
+English uses the English Chatterbox model (ChatterboxTTS). Every other language uses the multilingual
+model (ChatterboxMultilingualTTS, 23 languages) from the same Hugging Face repo, which is an optional
+~3.2 GB download. Codes and names match chatterbox.mtl_tts.SUPPORTED_LANGUAGES (0.1.7).
+
+Each language has a short built-in preview passage (enough for a 30 s preview) and a starting guess for
+its speaking pace in characters per second. The pace is re-measured per language after each generation.
+"""
+
+# code: (English name, native name, starting chars/s)
+LANGUAGES = {
+    "en": ("English", "English", 15.0),
+    "ar": ("Arabic", "العربية", 13.0),
+    "da": ("Danish", "Dansk", 15.0),
+    "de": ("German", "Deutsch", 15.0),
+    "el": ("Greek", "Ελληνικά", 15.0),
+    "es": ("Spanish", "Español", 15.0),
+    "fi": ("Finnish", "Suomi", 15.0),
+    "fr": ("French", "Français", 15.0),
+    "he": ("Hebrew", "עברית", 12.0),
+    "hi": ("Hindi", "हिन्दी", 13.0),
+    "it": ("Italian", "Italiano", 15.0),
+    "ja": ("Japanese", "日本語", 7.0),
+    "ko": ("Korean", "한국어", 7.0),
+    "ms": ("Malay", "Bahasa Melayu", 15.0),
+    "nl": ("Dutch", "Nederlands", 15.0),
+    "no": ("Norwegian", "Norsk", 15.0),
+    "pl": ("Polish", "Polski", 14.0),
+    "pt": ("Portuguese", "Português", 15.0),
+    "ru": ("Russian", "Русский", 14.0),
+    "sv": ("Swedish", "Svenska", 15.0),
+    "sw": ("Swahili", "Kiswahili", 14.0),
+    "tr": ("Turkish", "Türkçe", 14.0),
+    "zh": ("Chinese", "中文", 4.5),
+}
+DEFAULT_LANGUAGE = "en"
+# Controls measured to have only a small effect with the multilingual model in these languages
+# (tests/measure_controls.py hi: Pacing changed words/s by ~4 %, Expressiveness barely moved pitch;
+# in Spanish both work: +13 % words/s, +46 % pitch spread). The Studio says so next to the slider.
+WEAK_CONTROLS = {"hi": ["cfg_weight", "exaggeration"]}
+# Written without spaces between words: length is counted in characters, not words.
+CJK = {"zh", "ja"}
+
+PREVIEW = {
+    "ar": [
+        "مرحبًا، هذه معاينة سريعة لصوتي الجديد اليوم.",
+        "سجّلت بعض المقاطع القصيرة، والآن يمكنه قراءة أي شيء أكتبه.",
+        "بعض الجمل هادئة وبسيطة، مثل هذه الجملة.",
+        "وبعضها يحمل طاقة أكبر، لأن هذه هي الطريقة التي يتكلم بها الناس فعلًا!",
+        "هل تعتقد أنه يشبه الصوت الحقيقي بما يكفي؟",
+        "استمع إلى الإيقاع والتوقفات وطريقة انتهاء كل كلمة.",
+        "كان الطقس جميلًا هذا الأسبوع، لذلك أمشي طويلًا بعد العشاء.",
+        "شكرًا لاستماعك إلى هذه المعاينة، أراك في المرة القادمة.",
+    ],
+    "da": [
+        "Hej, det her er en hurtig smagsprøve på min nye stemme i dag.",
+        "Jeg har optaget et par korte klip, og nu kan den læse alt, hvad jeg skriver.",
+        "Nogle sætninger er rolige og enkle, ligesom denne her.",
+        "Andre har lidt mere energi, for sådan taler folk jo i virkeligheden!",
+        "Synes du, det lyder tæt nok på den ægte vare?",
+        "Lyt efter rytmen, pauserne og måden, hvert ord slutter på.",
+        "Vejret har været dejligt i denne uge, så jeg går lange ture efter aftensmaden.",
+        "Tak fordi du lyttede, vi ses næste gang.",
+    ],
+    "de": [
+        "Hallo, das ist eine kurze Hörprobe meiner neuen Stimme.",
+        "Ich habe ein paar kurze Aufnahmen gemacht, und jetzt kann sie alles vorlesen, was ich schreibe.",
+        "Manche Sätze sind ruhig und einfach, so wie dieser hier.",
+        "Andere haben etwas mehr Schwung, denn so reden Menschen nun einmal!",
+        "Findest du, dass es nah genug am Original klingt?",
+        "Achte auf den Rhythmus, die Pausen und darauf, wie jedes Wort endet.",
+        "Das Wetter war diese Woche herrlich, deshalb gehe ich nach dem Abendessen lange spazieren.",
+        "Danke fürs Zuhören, bis zum nächsten Mal.",
+    ],
+    "el": [
+        "Γεια σας, αυτή είναι μια σύντομη δοκιμή της νέας μου φωνής.",
+        "Ηχογράφησα μερικά μικρά δείγματα, και τώρα μπορεί να διαβάσει ό,τι γράφω.",
+        "Κάποιες προτάσεις είναι ήρεμες και απλές, όπως αυτή.",
+        "Άλλες έχουν περισσότερη ενέργεια, γιατί έτσι μιλάνε πραγματικά οι άνθρωποι!",
+        "Πιστεύεις ότι ακούγεται αρκετά κοντά στο πραγματικό;",
+        "Άκου τον ρυθμό, τις παύσεις και τον τρόπο που τελειώνει κάθε λέξη.",
+        "Ο καιρός ήταν υπέροχος αυτή την εβδομάδα, γι' αυτό κάνω μεγάλες βόλτες μετά το φαγητό.",
+        "Ευχαριστώ που άκουσες, τα λέμε την επόμενη φορά.",
+    ],
+    "es": [
+        "Hola, esta es una pequeña muestra de cómo suena mi nueva voz.",
+        "Grabé algunas frases cortas, y ahora puede leer cualquier cosa que escriba.",
+        "Algunas frases son tranquilas y sencillas, como esta.",
+        "¡Otras tienen un poco más de energía, porque así es como habla la gente de verdad!",
+        "¿Crees que se parece lo suficiente a la voz real?",
+        "Escucha el ritmo, las pausas y la forma en que termina cada palabra.",
+        "Esta semana ha hecho muy buen tiempo, así que doy largos paseos después de cenar.",
+        "Gracias por escuchar, nos vemos la próxima vez.",
+    ],
+    "fi": [
+        "Hei, tämä on lyhyt näyte uudesta äänestäni.",
+        "Äänitin muutaman lyhyen pätkän, ja nyt se osaa lukea mitä tahansa kirjoitan.",
+        "Jotkut lauseet ovat rauhallisia ja yksinkertaisia, kuten tämä.",
+        "Toisissa on enemmän energiaa, koska niin ihmiset oikeasti puhuvat!",
+        "Kuulostaako se mielestäsi tarpeeksi aidolta?",
+        "Kuuntele rytmiä, taukoja ja sitä, miten jokainen sana päättyy.",
+        "Sää on ollut ihana tällä viikolla, joten olen käynyt pitkillä kävelyillä illallisen jälkeen.",
+        "Kiitos kuuntelusta, nähdään ensi kerralla.",
+    ],
+    "fr": [
+        "Bonjour, voici un petit aperçu de ma nouvelle voix.",
+        "J'ai enregistré quelques courts extraits, et maintenant elle peut lire tout ce que j'écris.",
+        "Certaines phrases sont calmes et simples, comme celle-ci.",
+        "D'autres ont un peu plus d'énergie, parce que c'est comme ça que les gens parlent vraiment !",
+        "Tu trouves que ça ressemble assez à la vraie voix ?",
+        "Écoute le rythme, les pauses et la façon dont chaque mot se termine.",
+        "Il a fait très beau cette semaine, alors je fais de longues promenades après le dîner.",
+        "Merci d'avoir écouté, à la prochaine.",
+    ],
+    "he": [
+        "שלום, זו הדגמה קצרה של הקול החדש שלי.",
+        "הקלטתי כמה קטעים קצרים, ועכשיו הוא יכול להקריא כל דבר שאני כותב.",
+        "חלק מהמשפטים רגועים ופשוטים, כמו המשפט הזה.",
+        "לאחרים יש יותר אנרגיה, כי ככה אנשים באמת מדברים!",
+        "אתה חושב שזה נשמע מספיק דומה לקול האמיתי?",
+        "הקשב לקצב, להפסקות ולאופן שבו כל מילה מסתיימת.",
+        "מזג האוויר היה נהדר השבוע, אז אני הולך לטיולים ארוכים אחרי ארוחת הערב.",
+        "תודה שהקשבת, נתראה בפעם הבאה.",
+    ],
+    "hi": [
+        "नमस्ते, यह मेरी नई आवाज़ का एक छोटा सा नमूना है।",
+        "मैंने कुछ छोटी रिकॉर्डिंग की हैं, और अब यह मेरा लिखा हुआ कुछ भी पढ़ सकती है।",
+        "कुछ वाक्य शांत और सरल होते हैं, बिल्कुल इस वाक्य की तरह।",
+        "कुछ में थोड़ी ज़्यादा ऊर्जा होती है, क्योंकि लोग असल में ऐसे ही बात करते हैं!",
+        "क्या आपको लगता है कि यह असली आवाज़ जैसी लगती है?",
+        "लय, ठहराव और हर शब्द के ख़त्म होने के तरीके को ध्यान से सुनिए।",
+        "इस हफ़्ते मौसम बहुत अच्छा रहा, इसलिए मैं रात के खाने के बाद लंबी सैर पर जाता हूँ।",
+        "सुनने के लिए धन्यवाद, फिर मिलेंगे।",
+    ],
+    "it": [
+        "Ciao, questo è un breve assaggio della mia nuova voce.",
+        "Ho registrato alcuni brevi campioni, e ora può leggere tutto quello che scrivo.",
+        "Alcune frasi sono calme e semplici, come questa.",
+        "Altre hanno un po' più di energia, perché è così che la gente parla davvero!",
+        "Secondo te somiglia abbastanza alla voce vera?",
+        "Ascolta il ritmo, le pause e il modo in cui finisce ogni parola.",
+        "Questa settimana il tempo è stato bellissimo, così faccio lunghe passeggiate dopo cena.",
+        "Grazie per l'ascolto, alla prossima.",
+    ],
+    "ja": [
+        "こんにちは、これは私の新しい声の短いサンプルです。",
+        "短い録音をいくつか作ったので、今では私が書いたものを何でも読めます。",
+        "この文のように、落ち着いたシンプルな文もあります。",
+        "人は本当にそう話すので、もっと元気な文もあります！",
+        "本物の声に十分近いと思いますか？",
+        "リズムや間、そして一つ一つの言葉の終わり方を聞いてみてください。",
+        "今週は天気がとても良かったので、夕食の後に長い散歩をしています。",
+        "聞いてくれてありがとう、また次回お会いしましょう。",
+    ],
+    "ko": [
+        "안녕하세요, 이것은 제 새 목소리의 짧은 미리 듣기입니다.",
+        "짧은 녹음을 몇 개 했더니, 이제 제가 쓰는 건 무엇이든 읽을 수 있어요.",
+        "어떤 문장은 이 문장처럼 차분하고 단순합니다.",
+        "사람들은 실제로 그렇게 말하니까, 더 활기찬 문장도 있어요!",
+        "진짜 목소리와 충분히 비슷하게 들리나요?",
+        "리듬과 쉼, 그리고 각 단어가 끝나는 방식을 들어 보세요.",
+        "이번 주는 날씨가 정말 좋아서 저녁을 먹고 나서 오래 산책을 해요.",
+        "들어 주셔서 감사합니다, 다음에 또 만나요.",
+    ],
+    "ms": [
+        "Hai, ini ialah contoh ringkas suara baharu saya.",
+        "Saya merakam beberapa klip pendek, dan kini ia boleh membaca apa sahaja yang saya tulis.",
+        "Sesetengah ayat tenang dan ringkas, seperti ayat ini.",
+        "Ada juga yang lebih bertenaga, kerana begitulah cara orang benar-benar bercakap!",
+        "Adakah anda rasa ia cukup mirip dengan suara sebenar?",
+        "Dengar irama, jeda dan cara setiap perkataan berakhir.",
+        "Cuaca sangat baik minggu ini, jadi saya berjalan jauh selepas makan malam.",
+        "Terima kasih kerana mendengar, jumpa lagi lain kali.",
+    ],
+    "nl": [
+        "Hallo, dit is een korte voorproef van mijn nieuwe stem.",
+        "Ik heb een paar korte fragmenten opgenomen, en nu kan hij alles voorlezen wat ik typ.",
+        "Sommige zinnen zijn rustig en eenvoudig, zoals deze.",
+        "Andere hebben wat meer energie, want zo praten mensen nu eenmaal!",
+        "Vind je dat het genoeg op de echte stem lijkt?",
+        "Luister naar het ritme, de pauzes en hoe elk woord eindigt.",
+        "Het weer was heerlijk deze week, dus ik maak lange wandelingen na het eten.",
+        "Bedankt voor het luisteren, tot de volgende keer.",
+    ],
+    "no": [
+        "Hei, dette er en kort smakebit av den nye stemmen min.",
+        "Jeg tok opp noen korte klipp, og nå kan den lese alt jeg skriver.",
+        "Noen setninger er rolige og enkle, som denne.",
+        "Andre har litt mer energi, for det er sånn folk faktisk snakker!",
+        "Synes du det høres nært nok ut som den ekte stemmen?",
+        "Lytt etter rytmen, pausene og måten hvert ord slutter på.",
+        "Været har vært nydelig denne uken, så jeg går lange turer etter middag.",
+        "Takk for at du lyttet, vi ses neste gang.",
+    ],
+    "pl": [
+        "Cześć, to jest krótka próbka mojego nowego głosu.",
+        "Nagrałem kilka krótkich fragmentów, a teraz może przeczytać wszystko, co napiszę.",
+        "Niektóre zdania są spokojne i proste, tak jak to.",
+        "Inne mają więcej energii, bo tak naprawdę mówią ludzie!",
+        "Myślisz, że brzmi wystarczająco podobnie do prawdziwego głosu?",
+        "Posłuchaj rytmu, pauz i tego, jak kończy się każde słowo.",
+        "W tym tygodniu pogoda była piękna, więc po kolacji chodzę na długie spacery.",
+        "Dzięki za wysłuchanie, do zobaczenia następnym razem.",
+    ],
+    "pt": [
+        "Olá, esta é uma pequena amostra da minha nova voz.",
+        "Gravei alguns trechos curtos, e agora ela consegue ler qualquer coisa que eu escrever.",
+        "Algumas frases são calmas e simples, como esta.",
+        "Outras têm um pouco mais de energia, porque é assim que as pessoas falam de verdade!",
+        "Você acha que soa parecido o suficiente com a voz real?",
+        "Escute o ritmo, as pausas e o jeito como cada palavra termina.",
+        "O tempo esteve ótimo esta semana, então faço longas caminhadas depois do jantar.",
+        "Obrigado por ouvir, até a próxima.",
+    ],
+    "ru": [
+        "Привет, это короткий образец моего нового голоса.",
+        "Я записал несколько коротких фрагментов, и теперь он может прочитать всё, что я напишу.",
+        "Некоторые предложения спокойные и простые, как это.",
+        "В других больше энергии, ведь именно так люди и говорят!",
+        "Как думаешь, это достаточно похоже на настоящий голос?",
+        "Послушай ритм, паузы и то, как заканчивается каждое слово.",
+        "На этой неделе была чудесная погода, поэтому после ужина я долго гуляю.",
+        "Спасибо, что послушал, до встречи в следующий раз.",
+    ],
+    "sv": [
+        "Hej, det här är ett kort smakprov på min nya röst.",
+        "Jag spelade in några korta klipp, och nu kan den läsa allt jag skriver.",
+        "Vissa meningar är lugna och enkla, som den här.",
+        "Andra har lite mer energi, för det är så folk faktiskt pratar!",
+        "Tycker du att det låter tillräckligt likt den riktiga rösten?",
+        "Lyssna på rytmen, pauserna och hur varje ord slutar.",
+        "Vädret har varit härligt den här veckan, så jag tar långa promenader efter middagen.",
+        "Tack för att du lyssnade, vi hörs nästa gång.",
+    ],
+    "sw": [
+        "Habari, hii ni sampuli fupi ya sauti yangu mpya.",
+        "Nilirekodi vipande vichache vifupi, na sasa inaweza kusoma chochote ninachoandika.",
+        "Baadhi ya sentensi ni tulivu na rahisi, kama hii.",
+        "Nyingine zina nguvu zaidi, kwa sababu hivyo ndivyo watu wanavyozungumza kweli!",
+        "Unadhani inasikika karibu vya kutosha na sauti halisi?",
+        "Sikiliza mdundo, vituo na jinsi kila neno linavyoishia.",
+        "Hali ya hewa imekuwa nzuri wiki hii, kwa hiyo ninatembea mwendo mrefu baada ya chakula cha jioni.",
+        "Asante kwa kusikiliza, tuonane wakati ujao.",
+    ],
+    "tr": [
+        "Merhaba, bu yeni sesimin kısa bir örneği.",
+        "Birkaç kısa kayıt yaptım, artık yazdığım her şeyi okuyabiliyor.",
+        "Bazı cümleler bunun gibi sakin ve basittir.",
+        "Bazılarında daha fazla enerji var, çünkü insanlar gerçekten böyle konuşur!",
+        "Sence gerçek sese yeterince benziyor mu?",
+        "Ritmi, duraklamaları ve her kelimenin nasıl bittiğini dinle.",
+        "Bu hafta hava çok güzeldi, bu yüzden akşam yemeğinden sonra uzun yürüyüşlere çıkıyorum.",
+        "Dinlediğin için teşekkürler, bir dahaki sefere görüşürüz.",
+    ],
+    "zh": [
+        "你好，这是我新声音的一段简短试听。",
+        "我录了几段简短的声音，现在它可以朗读我写的任何内容。",
+        "有些句子平静又简单，就像这一句。",
+        "有些句子更有活力，因为人们平时就是这样说话的！",
+        "你觉得它听起来和真实的声音够像吗？",
+        "听听节奏、停顿，还有每个词结尾的方式。",
+        "这周天气很好，所以我晚饭后会出去散很久的步。",
+        "谢谢你的收听，我们下次再见。",
+    ],
+}
+
+
+def name(code: str) -> str:
+    en, native, _ = LANGUAGES[code]
+    return en if en == native else f"{native} ({en})"
+
+
+def listing() -> list[dict]:
+    return [{"code": c, "name": name(c), "english": LANGUAGES[c][0], "multilingual": c != "en",
+             "cjk": c in CJK, "rtl": c in ("ar", "he"), "weak_controls": WEAK_CONTROLS.get(c, [])} for c in LANGUAGES]

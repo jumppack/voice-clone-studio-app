@@ -1,4 +1,5 @@
 """Compare similarity-blend strategies: embedding lerp only vs. prompt splice (both orders)."""
+import tempfile
 import os, sys, json
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 from pathlib import Path
@@ -8,7 +9,7 @@ from app import engine as E
 from app.engine import Engine, GenParams
 F = Path(__file__).parent / "fixtures"; REF = F / "daniel_take1_room.wav"
 TEXT = "The old bridge was closed for repairs, so we took the long road around the lake and arrived just after sunset."
-e = Engine(Path("data/cache")); e.load()
+e = Engine(Path(tempfile.mkdtemp()))  # temp cache: never touches data/; e.load()
 out = {}
 for mode in ["embed_only", "default_first", "user_first"]:
     E.PROMPT_SPLICE = mode != "embed_only"; E.PROMPT_ORDER = mode

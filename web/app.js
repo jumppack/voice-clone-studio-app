@@ -71,8 +71,8 @@ async function loadSetup() {
   if (voiceSource() !== "upload") items.push({ id: "mic", name: "Microphone permission", ok: S.micGranted === true, wait: S.micGranted === undefined,
     detail: S.micGranted ? "Allowed" : S.micGranted === false ? "Blocked. Allow it in the browser's site settings." : "Not asked yet", mic: true });
   $("#checklist").innerHTML = items.map((it) => {
-    const st = it.ok ? "ok" : it.wait ? "wait" : "no";
-    const word = it.ok ? "Ready" : it.wait ? (it.id === "engine" ? "Loading" : "Not checked") : "Missing";
+    const st = it.ok ? "ok" : it.wait || it.optional ? "wait" : "no";
+    const word = it.ok ? "Ready" : it.wait ? (it.id === "engine" ? "Loading" : "Not checked") : it.optional ? "Optional" : "Missing";
     const inst = S.setup.installs[it.id];
     let action = "";
     if (it.mic && !it.ok) action = `<button class="clay-btn" data-mic>Allow microphone</button>`;
@@ -93,7 +93,7 @@ async function loadSetup() {
 }
 function setupGate() {
   const ok = $("#consent").checked && $("#wmAck").checked;
-  const need = S.setup.items.filter((i) => !i.ok && i.id !== "ffmpeg");
+  const need = S.setup.items.filter((i) => !i.ok && i.id !== "ffmpeg" && !i.optional);
   const src = voiceSource();
   const file = $("#voiceFile").files[0];
   const haveUpload = S.profile && S.profile.source === "upload" && S.profile.ready;
@@ -412,6 +412,7 @@ function renderSliders() {
       <div class="range-wrap"><input type="range" id="c-${c.key}" min="${c.min}" max="${c.max}" step="${c.step}" value="${c.def}" aria-describedby="h-${c.key}">
         <span class="def-mark${defPct > 90 ? " at-end" : ""}" style="left:calc(15px + (100% - 30px) * ${defPct / 100})" aria-hidden="true"></span></div>
       <div class="ctrl-ends" aria-hidden="true"><span>${c.ends[0]}</span><span>${c.ends[1]}</span></div>
+      <p class="ctrl-measure weak-note" id="w-${c.key}" hidden>Small effect in this language (measured). It still works, but expect subtle changes.</p>
       ${c.key === "similarity" ? '<p class="ctrl-measure" id="simMeasured"></p>' : ""}</div>`;
   }).join("");
   for (const c of CONTROLS) {
@@ -443,19 +444,25 @@ $("#seedOn").onchange = () => { $("#seedVal").disabled = !$("#seedOn").checked; 
 // Length comes only from how much text is spoken (the audio is never stretched). The estimate uses
 // this voice's measured pace (chars/second), learned from every generation.
 S.cps = 15;
+S.lang = "en"; S.langs = [];
 const lenTarget = () => ($('input[name="lenMode"]:checked').value === "target" ? +$("#lenTarget").value : 0);
 const speechSecs = (t) => t.replace(/\s+/g, " ").trim().length / S.cps;
-function splitSentences(t) { return t.trim() ? t.trim().split(/(?<=[.!?])\s+/) : []; }
+const isCJK = () => (S.langs.find((l) => l.code === S.lang) || {}).cjk;
+// Mirrors engine.split_text: . ! ? plus the Hindi danda, Arabic question mark and CJK full-width marks.
+function splitSentences(t) { t = t.trim(); return t ? t.split(/(?<=[.!?।॥؟])\s+|(?<=[。！？])\s*/).filter((x) => x.trim()) : []; }
+function wordCount(t) { t = t.trim(); if (!t) return 0; return isCJK() ? Math.floor(t.replace(/[\s\p{P}\p{S}]/gu, "").length / 2) : t.split(/\s+/).length; }
 function fitToTarget(t, target) {  // mirrors engine.generate: sentences in order while each gets closer
   let tot = 0, n = 0; const ss = splitSentences(t);
   for (const x of ss) { const end = tot + speechSecs(x); if (tot > 0 && (end > target + 1 || Math.abs(end - target) >= Math.abs(tot - target))) break; tot = end; n++; }
   return { seconds: tot, used: n, total: ss.length };
 }
 function textStats() {
-  const t = $("#textIn").value.trim(); const w = t ? t.split(/\s+/).length : 0;
+  const t = $("#textIn").value.trim(); const w = wordCount(t);
+  const langOk = (S.langs.find((l) => l.code === S.lang) || { available: true }).available;
   const parts = splitSentences(t).length; const secs = speechSecs(t);
-  $("#textStats").textContent = `${w} words · about ${Math.max(1, Math.round(secs))} s of speech in your voice${parts > 1 ? ` · ${parts} sentences, generated one by one` : ""}${w && w < 4 ? " · type at least 4 words" : ""}`;
-  $("#genBtn").disabled = w < 4;
+  $("#textStats").textContent = `${isCJK() ? `${t.replace(/\s/g, "").length} characters` : `${w} words`} · about ${Math.max(1, Math.round(secs))} s of speech in your voice${parts > 1 ? ` · ${parts} sentences, generated one by one` : ""}${w && w < 4 ? " · type at least 4 words" : ""}`;
+  $("#genBtn").disabled = w < 4 || !langOk;
+  $("#previewBtn").disabled = !langOk;
   const tgt = lenTarget(); const h = $("#lenHelp"); h.classList.remove("warn");
   $("#lenCtrl").hidden = !tgt;
   $("#lenVal").textContent = `${$("#lenTarget").value} s`;
@@ -465,8 +472,8 @@ function textStats() {
   if (w < 4) { h.textContent = ""; return; }
   const f = fitToTarget(t, tgt);
   if (secs < tgt - 1.5) {
-    const more = Math.ceil(((tgt - secs) * S.cps) / 5.5);  // ~5.5 chars per word incl. space
-    h.textContent = `Your text is about ${Math.round(secs)} s. Add about ${more} more words to reach ${tgt} s. Speech can't be stretched without changing your voice. Preview always fills ${tgt} s.`;
+    const more = Math.ceil(((tgt - secs) * S.cps) / (isCJK() ? 1 : 5.5));  // ~5.5 chars per word incl. space
+    h.textContent = `Your text is about ${Math.round(secs)} s. Add about ${more} more ${isCJK() ? "characters" : "words"} to reach ${tgt} s. Speech can't be stretched without changing your voice. Preview always fills ${tgt} s.`;
     h.classList.add("warn");
   } else if (f.used < f.total) {
     h.textContent = `Generate stops after sentence ${f.used} of ${f.total}, at about ${Math.round(f.seconds)} s, the whole sentence nearest ${tgt} s.`;
@@ -478,9 +485,45 @@ $$('input[name="lenMode"]').forEach((r) => (r.onchange = textStats));
 $("#lenTarget").oninput = textStats;
 $("#textIn").oninput = textStats;
 
+// ---------------- language ----------------
+const DEFAULT_SAMPLE = $("#textIn").value;
+async function loadLanguages() {
+  let d; try { d = await api("/api/languages"); } catch { return; }
+  S.langs = d.languages;
+  if (!S.langs.some((l) => l.code === S.lang && l.available)) S.lang = "en";
+  $("#langSel").innerHTML = S.langs.map((l) => `<option value="${l.code}" ${l.available ? "" : "disabled"} ${l.code === S.lang ? "selected" : ""}>${esc(l.name)}${l.available ? "" : " · needs download"}</option>`).join("");
+  langNote(d.multilingual_ready);
+}
+function langNote(ready) {
+  const n = $("#langNote");
+  if (!ready) {
+    n.innerHTML = `English only for now. To speak Hindi, Spanish, Chinese and 19 more languages, get the optional multilingual model (about 2.2 GB) on <a href="#" id="toSetupLang">Setup</a>.`;
+    $("#toSetupLang").onclick = (e) => { e.preventDefault(); show("setup"); };
+    n.hidden = false;
+  } else if (S.lang !== "en") {
+    n.textContent = "Your voice can come from a recording in any language. A recording in this language usually sounds most natural.";
+    n.hidden = false;
+  } else n.hidden = true;
+}
+function applyLanguage(code, save) {
+  const prev = S.langs.find((l) => l.code === S.lang), next = S.langs.find((l) => l.code === code);
+  if (!next) return;
+  const cur = $("#textIn").value.trim();
+  if (!cur || cur === DEFAULT_SAMPLE.trim() || (prev && cur === prev.sample)) $("#textIn").value = code === "en" ? DEFAULT_SAMPLE : next.sample;
+  S.lang = code; S.cps = next.cps || S.cps;
+  $("#textIn").lang = code;
+  langNote(S.langs.some((l) => l.code !== "en" && l.available));
+  for (const c of CONTROLS) { const w = $(`#w-${c.key}`); if (w) w.hidden = !(next.weak_controls || []).includes(c.key); }
+  if (save) saveSetting("language", code);
+  textStats();
+}
+$("#langSel").onchange = (e) => applyLanguage(e.target.value, true);
+
 async function enterStudio() {
   if (!$("#sliders").children.length) { renderSliders(); await loadPresets(); }
-  try { S.cps = (await api("/api/speech-rate")).cps || S.cps; } catch {}
+  if (S.setup && S.setup.settings.language) S.lang = S.setup.settings.language;
+  await loadLanguages();
+  applyLanguage(S.lang, false);
   const line = $("#voiceSrcLine"), p = S.profile;
   if (p && p.source === "upload") {
     const t = p.takes.find((x) => x.step === p.voice_take);
@@ -496,7 +539,7 @@ async function generate(preview) {
   $("#genBtn").disabled = $("#previewBtn").disabled = true;
   $("#progWrap").hidden = false; setProg(0, preview ? "Starting preview…" : "Starting…");
   try {
-    let job = await api("/api/generate", { method: "POST", body: form({ text: $("#textIn").value, params: JSON.stringify(params()), preview, target: lenTarget() || (preview ? 5 : 0) }) });
+    let job = await api("/api/generate", { method: "POST", body: form({ text: $("#textIn").value, params: JSON.stringify(params()), preview, target: lenTarget() || (preview ? 5 : 0), language: S.lang }) });
     const t0 = performance.now();
     while (job.state !== "done" && job.state !== "error") {
       await new Promise((r) => setTimeout(r, 500));
@@ -507,7 +550,7 @@ async function generate(preview) {
       setProg(frac, job.state === "loading" ? "Loading the voice engine (first run only)…" : `Part ${Math.min(job.done + 1, job.total)} of ${job.total} · about ${left} s left`);
     }
     if (job.state === "error") throw new Error(job.error);
-    if (job.result.cps) S.cps = job.result.cps;
+    if (job.result.cps) { S.cps = job.result.cps; const l = S.langs.find((x) => x.code === (job.result.language || S.lang)); if (l) l.cps = job.result.cps; }
     const un = job.result.unspoken ? ` · ${job.result.unspoken} sentence${job.result.unspoken > 1 ? "s" : ""} past the ${job.result.target} s length not spoken` : "";
     setProg(1, `Done in ${job.elapsed} s for ${job.result.seconds} s of audio${un}.`);
     showResult(job);

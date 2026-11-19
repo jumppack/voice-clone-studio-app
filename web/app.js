@@ -40,25 +40,43 @@ function show(screen) {
   for (const s of $$(".screen")) s.hidden = s.id !== `screen-${screen}`;
   $$(".tab").forEach((t) => { if (t.dataset.screen === screen) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current"); });
   if (screen === "record") enterRecord();
+  if (screen === "myvoice") enterMyVoice();
+  if (screen === "setup" && S.setup) setupGate();
   if (screen === "profile") renderProfile();
   if (screen === "studio") enterStudio();
+  if (screen === "sts" && window.STS) STS.enter();
   $("#main").focus({ preventScroll: true });
   window.scrollTo(0, 0);
 }
 const voiceSource = () => (S.setup && S.setup.settings.voice_source) || null;
-function updateTabs() {
+function updateTabs() {  // sidebar: Text to speech, Speech to speech, My voice (record / choose takes), Setup
   const st = S.setup && S.setup.settings;
-  const setupOk = st && st.consent && st.watermark_ack;
-  const ready = S.profile && S.profile.ready;
-  const up = voiceSource() === "upload";  // a recording you already have: Setup → Studio, no Record/Voice steps
-  $('.tab[data-screen="record"]').hidden = up;
-  $('.tab[data-screen="profile"]').hidden = up;
-  $('.tab[data-screen="studio"] .tab-num').textContent = up ? "2" : "4";
-  $('.tab[data-screen="record"]').disabled = !setupOk || voiceSource() !== "record";
-  $('.tab[data-screen="profile"]').disabled = !setupOk || !(S.profile && S.profile.takes.length) || up;
-  $('.tab[data-screen="studio"]').disabled = !setupOk || !ready || (up && !(S.profile && S.profile.source === "upload"));
+  const setupOk = !!(st && st.consent && st.watermark_ack);
+  const up = voiceSource() === "upload";  // My voice from a recording you already have: no Record/Choose steps
+  const rec = $('.tab[data-screen="record"]'), prof = $('.tab[data-screen="profile"]');
+  if (rec) { rec.hidden = up || !voiceSource(); rec.disabled = !setupOk || voiceSource() !== "record"; }
+  if (prof) { prof.hidden = up || !voiceSource(); prof.disabled = !setupOk || !(S.profile && S.profile.takes.length); }
+  $('.tab[data-screen="studio"]').disabled = !setupOk;
+  $('.tab[data-screen="sts"]').disabled = !setupOk;
+  if (window.VOICES) VOICES.renderNav();
 }
 $$(".tab").forEach((t) => (t.onclick = () => show(t.dataset.screen)));
+
+// ---------------- boot overlay ----------------
+// Shown while the speech engine loads into memory (it can't speak or convert until then).
+// ?boot=demo keeps it on screen (used to record docs/boot_overlay.mp4).
+const DEMO_BOOT = new URLSearchParams(location.search).get("boot") === "demo";
+function bootOverlay(on) {
+  const el = $("#boot"); if (!el) return;
+  if (on && !S.bootT0) S.bootT0 = Date.now();
+  if (on && !DEMO_BOOT) {
+    const s = Math.round((Date.now() - S.bootT0) / 1000);
+    $("#bootSub").textContent = s < 45 ? "Loading the speech models into memory. This takes about 15 to 40 seconds after the app opens."
+      : `Still loading (${s} s). A busy Mac or the first start after an update can take a little longer.`;
+  }
+  if (!on && !el.hidden) toast("Voice engine ready");
+  el.hidden = !on;
+}
 
 // ---------------- setup ----------------
 async function loadSetup() {
@@ -89,21 +107,28 @@ async function loadSetup() {
   const src = voiceSource();
   $$('input[name="voiceSource"]').forEach((r) => (r.checked = r.value === src));
   setupGate();
-  if (eng.state === "loading" || Object.values(S.setup.installs).some((i) => i.state === "running")) setTimeout(loadSetup, 2000);
+  const weightsOk = S.setup.items.some((i) => i.id === "weights" && i.ok);
+  const warming = weightsOk && (eng.state === "loading" || eng.state === "not_loaded");
+  bootOverlay(warming || DEMO_BOOT);
+  if (warming || Object.values(S.setup.installs).some((i) => i.state === "running")) setTimeout(loadSetup, warming ? 1000 : 2000);
 }
 function setupGate() {
   const ok = $("#consent").checked && $("#wmAck").checked;
   const need = S.setup.items.filter((i) => !i.ok && i.id !== "ffmpeg" && !i.optional);
+  // Setup and permissions: only the checklist and the two boxes
+  $("#setupDone").disabled = !ok || need.length > 0;
+  $("#setupDoneHint").textContent = need.length ? `Install: ${need.map((n) => n.name).join(", ")}.` : !ok ? "Tick both boxes to continue." : "";
+  $("#myvoiceGate").hidden = ok;
   const src = voiceSource();
   const file = $("#voiceFile").files[0];
   const haveUpload = S.profile && S.profile.source === "upload" && S.profile.ready;
   const btn = $("#toRecord");
   $("#uploadArea").hidden = src !== "upload";
   if (src === "upload" && !file && haveUpload) $("#voiceFileName").textContent = `Using ${S.profile.upload_file}. Choose another file to replace it.`;
-  btn.textContent = src === "record" ? "Continue to recording" : src === "upload" ? (file ? "Use this recording" : haveUpload ? "Continue to the studio" : "Choose a file first") : "Continue";
+  btn.textContent = src === "record" ? "Continue to recording" : src === "upload" ? (file ? "Use this recording" : haveUpload ? "Go to text to speech" : "Choose a file first") : "Continue";
   const ffmpegMissing = file && !/\.wav$/i.test(file.name) && S.setup.items.some((i) => i.id === "ffmpeg" && !i.ok);
   btn.disabled = !ok || need.length > 0 || !src || (src === "upload" && !file && !haveUpload) || !!ffmpegMissing || S.uploading;
-  $("#setupHint").textContent = need.length ? `Install: ${need.map((n) => n.name).join(", ")}.` : !ok ? "Tick both boxes to continue."
+  $("#setupHint").textContent = need.length ? `Install first (Setup and permissions): ${need.map((n) => n.name).join(", ")}.` : !ok ? "Accept the two boxes in Setup and permissions first."
     : !src ? "Choose how you'd like to give your voice." : ffmpegMissing ? "Install ffmpeg (above) to read MP3 and other compressed files, or choose a WAV." : "";
   updateTabs();
 }
@@ -113,6 +138,22 @@ async function saveSetting(key, value) {  // one field per request, so two quick
   S.setup.settings = { ...S.setup.settings, ...s };
   setupGate();
 }
+function enterMyVoice() {
+  setupGate();
+  const p = S.profile, box = $("#mvStatus");
+  const has = p && p.takes && p.takes.length;
+  box.hidden = !has;
+  if (has) {
+    $("#mvStatusText").textContent = p.source === "upload"
+      ? `From ${p.upload_file}: ${p.takes.length} clip${p.takes.length > 1 ? "s" : ""} cut from it${p.ready ? ", ready to use." : "."}`
+      : `${p.takes.length} recorded take${p.takes.length > 1 ? "s" : ""}${p.ready ? ", ready to use." : `. Record at least ${p.min_takes} good ones.`}`;
+    $("#mvRecord").hidden = p.source === "upload"; $("#mvChoose").hidden = p.source === "upload";
+  }
+}
+$("#mvRecord").onclick = () => show("record");
+$("#mvChoose").onclick = () => show("profile");
+$("#toSetupLink").onclick = (e) => { e.preventDefault(); show("setup"); };
+$("#setupDone").onclick = () => show(window.VOICES && VOICES.anyReady() ? "studio" : "myvoice");
 $("#consent").onchange = (e) => saveSetting("consent", e.target.checked);
 $("#wmAck").onchange = (e) => saveSetting("watermark_ack", e.target.checked);
 $$('input[name="voiceSource"]').forEach((r) => (r.onchange = async () => {
@@ -393,8 +434,8 @@ $("#toStudio").onclick = () => show("studio");
 
 // ---------------- studio controls ----------------
 const CONTROLS = [
-  { key: "similarity", label: "Similarity to my voice", help: "Lower mixes in a neutral stock voice, so it sounds like you but not an exact copy.",
-    min: 0.5, max: 1.0, step: 0.05, def: 1.0, ends: ["Blended", "Exactly me"], fmt: (v) => `${Math.round(v * 100)}%` },
+  { key: "similarity", label: "Similarity to the voice", help: "Lower mixes in a neutral stock voice, so it sounds like the chosen voice but not an exact copy.",
+    min: 0.5, max: 1.0, step: 0.05, def: 1.0, ends: ["Blended", "Exact copy"], fmt: (v) => `${Math.round(v * 100)}%` },
   { key: "exaggeration", label: "Expressiveness", help: "How much emotion and emphasis goes into the delivery.",
     min: 0.25, max: 1.5, step: 0.05, def: 0.5, ends: ["Calm", "Dramatic"], fmt: (v) => v.toFixed(2) },
   { key: "cfg_weight", label: "Pacing", help: "Lower is slower and more deliberate; higher is brisker.",
@@ -460,9 +501,11 @@ function textStats() {
   const t = $("#textIn").value.trim(); const w = wordCount(t);
   const langOk = (S.langs.find((l) => l.code === S.lang) || { available: true }).available;
   const parts = splitSentences(t).length; const secs = speechSecs(t);
-  $("#textStats").textContent = `${isCJK() ? `${t.replace(/\s/g, "").length} characters` : `${w} words`} · about ${Math.max(1, Math.round(secs))} s of speech in your voice${parts > 1 ? ` · ${parts} sentences, generated one by one` : ""}${w && w < 4 ? " · type at least 4 words" : ""}`;
-  $("#genBtn").disabled = w < 4 || !langOk;
-  $("#previewBtn").disabled = !langOk;
+  $("#textStats").textContent = `${isCJK() ? `${t.replace(/\s/g, "").length} characters` : `${w} words`} · about ${Math.max(1, Math.round(secs))} s of speech${parts > 1 ? ` · ${parts} sentences, generated one by one` : ""}${w && w < 4 ? " · type at least 4 words" : ""}`;
+  const vOk = !window.VOICES || VOICES.ready(ttsVoice());
+  $("#genBtn").disabled = w < 4 || !langOk || !vOk;
+  $("#previewBtn").disabled = !langOk || !vOk;
+  if (!vOk) $("#textStats").textContent = "Pick a voice that's ready, or add one under Your voices (record My voice, or add a clip).";
   const tgt = lenTarget(); const h = $("#lenHelp"); h.classList.remove("warn");
   $("#lenCtrl").hidden = !tgt;
   $("#lenVal").textContent = `${$("#lenTarget").value} s`;
@@ -473,7 +516,7 @@ function textStats() {
   const f = fitToTarget(t, tgt);
   if (secs < tgt - 1.5) {
     const more = Math.ceil(((tgt - secs) * S.cps) / (isCJK() ? 1 : 5.5));  // ~5.5 chars per word incl. space
-    h.textContent = `Your text is about ${Math.round(secs)} s. Add about ${more} more ${isCJK() ? "characters" : "words"} to reach ${tgt} s. Speech can't be stretched without changing your voice. Preview always fills ${tgt} s.`;
+    h.textContent = `Your text is about ${Math.round(secs)} s. Add about ${more} more ${isCJK() ? "characters" : "words"} to reach ${tgt} s. Speech can't be stretched without changing the voice. Preview always fills ${tgt} s.`;
     h.classList.add("warn");
   } else if (f.used < f.total) {
     h.textContent = `Generate stops after sentence ${f.used} of ${f.total}, at about ${Math.round(f.seconds)} s, the whole sentence nearest ${tgt} s.`;
@@ -518,17 +561,20 @@ function applyLanguage(code, save) {
   textStats();
 }
 $("#langSel").onchange = (e) => applyLanguage(e.target.value, true);
+$("#ttsVoice").onchange = () => { textStats(); const p = S.profile; $("#voiceSrcLine").hidden = !(ttsVoice() === "me" && p && p.source === "upload"); };
 
+const ttsVoice = () => $("#ttsVoice").value || "me";
 async function enterStudio() {
   if (!$("#sliders").children.length) { renderSliders(); await loadPresets(); }
+  if (window.VOICES) { await VOICES.refresh(); VOICES.fillSelect($("#ttsVoice"), (S.setup && S.setup.settings.tts_voice) || "me"); }
   if (S.setup && S.setup.settings.language) S.lang = S.setup.settings.language;
   await loadLanguages();
   applyLanguage(S.lang, false);
   const line = $("#voiceSrcLine"), p = S.profile;
-  if (p && p.source === "upload") {
+  if (ttsVoice() === "me" && p && p.source === "upload") {
     const t = p.takes.find((x) => x.step === p.voice_take);
     line.innerHTML = `Voice from <strong>${esc(p.upload_file)}</strong>${t ? ` (${fmtMMSS(t.upload.start)}–${fmtMMSS(t.upload.end)}, the clearest part)` : ""} · <a href="#" id="changeSrc">Change</a>`;
-    line.hidden = false; $("#changeSrc").onclick = (e) => { e.preventDefault(); show("setup"); };
+    line.hidden = false; $("#changeSrc").onclick = (e) => { e.preventDefault(); show("myvoice"); };
   } else line.hidden = true;
   textStats();
 }
@@ -539,7 +585,7 @@ async function generate(preview) {
   $("#genBtn").disabled = $("#previewBtn").disabled = true;
   $("#progWrap").hidden = false; setProg(0, preview ? "Starting preview…" : "Starting…");
   try {
-    let job = await api("/api/generate", { method: "POST", body: form({ text: $("#textIn").value, params: JSON.stringify(params()), preview, target: lenTarget() || (preview ? 5 : 0), language: S.lang }) });
+    let job = await api("/api/generate", { method: "POST", body: form({ text: $("#textIn").value, params: JSON.stringify(params()), preview, target: lenTarget() || (preview ? 5 : 0), language: S.lang, voice: ttsVoice() }) });
     const t0 = performance.now();
     while (job.state !== "done" && job.state !== "error") {
       await new Promise((r) => setTimeout(r, 500));
@@ -570,7 +616,7 @@ function showResult(job) {
   $("#simFill").style.width = `calc(${Math.max(0, Math.min(100, sim))}% - 6px)`;
   $("#simBar").setAttribute("aria-valuenow", sim);
   $("#simText").textContent = `${sim}%`;
-  $("#simMeasured").textContent = `Measured on the last result: ${sim}% similar to your voice take`;
+  $("#simMeasured").textContent = `Measured on the last result: ${sim}% similar to the voice`;
   $("#outTime").textContent = `0:00 / ${fmtTime(job.result.seconds)}`;
   drawWave();
 }
@@ -647,12 +693,14 @@ $("#revealBtn").onclick = () => S.lastExport && desktopApi() && desktopApi().rev
   try { const p = await navigator.permissions.query({ name: "microphone" }); S.micGranted = p.state === "granted" ? true : p.state === "denied" ? false : undefined; } catch {}
   await loadSetup();
   S.profile = await api("/api/profile");
+  if (window.VOICES) await VOICES.refresh();
   setupGate();
   meterLoop();
   const st = S.setup.settings;
   const start = new URLSearchParams(location.search).get("screen");
   if (start && !$(`.tab[data-screen="${start}"]`).disabled) show(start);
-  else if (st.consent && st.watermark_ack && S.profile.ready && (st.voice_source !== "upload" || S.profile.source === "upload")) show("studio");
+  else if (st.consent && st.watermark_ack && (window.VOICES ? VOICES.anyReady() : S.profile.ready)) show("studio");
+  else show("setup");
 })();
 
 // Native-only controls appear once the macOS app bridge is ready.

@@ -37,3 +37,4 @@ PLAN.md
 .vscode/
 .idea/
 node_modules/
+.enola/

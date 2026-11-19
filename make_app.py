@@ -26,33 +26,35 @@ LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/Launc
 APP_NAME = "Voice Clone Studio"
 BUNDLE_ID = "local.voice-clone-studio"
 SHORTCUT_ID = "local.voice-clone-studio.shortcut"
+ENTRY = "desktop.py"
+MIC_TEXT = "Voice Clone Studio records short samples of your voice to clone it. Audio stays on this Mac."
 
 # A copy installed outside the project (e.g. /Applications) is a small SHORTCUT app: it asks macOS to
 # start the full app (./dist) by bundle id. The full app stays inside the project folder because macOS
 # silently blocks an unsigned app elsewhere from reading ~/Desktop (no permission prompt is shown).
 SHORTCUT_LAUNCHER = """#!/bin/bash
-# Starts the full Voice Clone Studio app, which lives in its project folder ({target}).
+# Starts the full {app_name} app, which lives in its project folder ({target}).
 open -b {bundle_id} --args "$@" && exit 0
-osascript -e "display dialog \\"Voice Clone Studio isn't built in its project folder yet. Run: .venv/bin/python make_app.py --dest /Applications (in {project})\\" buttons {{\\"OK\\"}} default button \\"OK\\" with icon stop with title \\"Voice Clone Studio\\"" >/dev/null 2>&1
+osascript -e "display dialog \\"{app_name} isn't built in its project folder yet. Run: .venv/bin/python make_app.py{app_flag} --dest /Applications (in {project})\\" buttons {{\\"OK\\"}} default button \\"OK\\" with icon stop with title \\"{app_name}\\"" >/dev/null 2>&1
 exit 1
 """
 
 LAUNCHER = """#!/bin/bash
-# Launches Voice Clone Studio from its project folder with that folder's Python environment.
+# Launches {app_name} from its project folder with that folder's Python environment.
 APP="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="$APP/Contents/MacOS/{app_name}"
 PROJECT="{project}"
-LOG="$PROJECT/data/app.log"
+LOG="$PROJECT/data/{log}"
 fail() {{
   osascript -e "display dialog \\"$1\\" buttons {{\\"OK\\"}} default button \\"OK\\" with icon stop with title \\"{app_name}\\"" >/dev/null 2>&1
   exit 1
 }}
-[ -f "$PROJECT/desktop.py" ] || fail "Voice Clone Studio can't read its project folder ($PROJECT). Re-run make_app.py, or allow access in System Settings > Privacy & Security > Files and Folders."
-[ -x "$PY" ] || fail "Voice Clone Studio can't find its Python environment. Re-run make_app.py from the project folder."
+[ -f "$PROJECT/{entry}" ] || fail "{app_name} can't read its project folder ($PROJECT). Re-run make_app.py, or allow access in System Settings > Privacy & Security > Files and Folders."
+[ -x "$PY" ] || fail "{app_name} can't find its Python environment. Re-run make_app.py from the project folder."
 mkdir -p "$PROJECT/data"
 export VCS_SITE_PACKAGES="{site_packages}"
 cd "$PROJECT"
-exec "$PY" "$PROJECT/desktop.py" >>"$LOG" 2>&1
+exec "$PY" "$PROJECT/{entry}" >>"$LOG" 2>&1
 """
 
 
@@ -100,8 +102,8 @@ def make_icon_png(size: int = 1024):
     blob = Image.fromarray((light * (1 - t) + deep * t).astype(np.uint8), "RGB")
     canvas.paste(blob, (0, 0), bm)
 
-    # white mic
     d = ImageDraw.Draw(canvas)
+    # white mic
     w, h = int(rb * 0.46), int(rb * 0.86)
     d.rounded_rectangle((cx - w // 2, cy - int(h * 0.62), cx + w // 2, cy + int(h * 0.38)), radius=w // 2, fill=(255, 255, 255, 255))
     lw = int(rb * 0.085)
@@ -144,7 +146,8 @@ def build(dest_dir: Path, shortcut_to: Path | None = None) -> Path:
     make_icns(res / "AppIcon.icns")
     if shortcut_to is not None:
         launcher = macos / "launcher"
-        launcher.write_text(SHORTCUT_LAUNCHER.format(target=shortcut_to, bundle_id=BUNDLE_ID, project=SRC))
+        launcher.write_text(SHORTCUT_LAUNCHER.format(target=shortcut_to, bundle_id=BUNDLE_ID, project=SRC, app_name=APP_NAME,
+                                                     app_flag=""))
         launcher.chmod(0o755)
         plist_path.write_bytes(plistlib.dumps({
             "CFBundleName": APP_NAME, "CFBundleDisplayName": APP_NAME, "CFBundleIdentifier": SHORTCUT_ID,
@@ -163,7 +166,8 @@ def build(dest_dir: Path, shortcut_to: Path | None = None) -> Path:
     python = Path(sys.executable).resolve()
     (macos / APP_NAME).symlink_to(python)
     launcher = macos / "launcher"
-    launcher.write_text(LAUNCHER.format(app_name=APP_NAME, project=SRC, site_packages=sysconfig.get_paths()["purelib"]))
+    launcher.write_text(LAUNCHER.format(app_name=APP_NAME, project=SRC, site_packages=sysconfig.get_paths()["purelib"],
+                                        entry=ENTRY, log="app.log"))
     launcher.chmod(0o755)
 
     plist_path.write_bytes(plistlib.dumps({
@@ -180,8 +184,7 @@ def build(dest_dir: Path, shortcut_to: Path | None = None) -> Path:
         "NSHighResolutionCapable": True,
         "NSAppSleepDisabled": True,           # generation must not be throttled in the background
         "NSSupportsAutomaticGraphicsSwitching": True,
-        "NSMicrophoneUsageDescription": "Voice Clone Studio records short samples of your voice to clone it. "
-                                        "Audio stays on this Mac.",
+        **({"NSMicrophoneUsageDescription": MIC_TEXT} if MIC_TEXT else {}),
     }))
     subprocess.run(["touch", str(app)], check=False)
     return app
@@ -210,7 +213,7 @@ def main() -> None:
         app = build(dest)
         print(f"built:  {app}")
     print(f"python: {Path(sys.executable).resolve()}")
-    print(f"runs:   {SRC / 'desktop.py'} (data in {SRC / 'data'})")
+    print(f"runs:   {SRC / ENTRY} (data in {SRC / 'data'})")
 
 
 if __name__ == "__main__":

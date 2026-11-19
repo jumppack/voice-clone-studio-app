@@ -139,13 +139,34 @@ INSTALL_CMDS = {
                     "from huggingface_hub import hf_hub_download as d;"
                     + "".join(f"d('ResembleAI/chatterbox','{f}');" for f in MTL_FILES)],
     "ffmpeg": ["brew", "install", "ffmpeg"],
+    "asr": [str(ROOT / ".venv/bin/python"), "-c",
+            "from huggingface_hub import hf_hub_download as d;"
+            "d('mlx-community/whisper-large-v3-turbo','config.json');d('mlx-community/whisper-large-v3-turbo','weights.safetensors')"],
 }
 INSTALL_INFO = {
     "packages": "Python packages from pypi.org (~1.1 GB on disk)",
     "weights": "Chatterbox model weights from huggingface.co (~3.2 GB)",
     "mtl_weights": "Multilingual Chatterbox model from huggingface.co (~2.2 GB), for the 22 languages besides English",
     "ffmpeg": "ffmpeg via Homebrew (~60 MB), needed for MP3 export",
+    "asr": "Transcription model mlx-community/whisper-large-v3-turbo from huggingface.co (1.6 GB), for Speak like the voice "
+           "(needs the mlx-whisper package: pip install mlx-whisper)",
 }
+
+
+def asr_item() -> dict:
+    from .restyle import asr_present
+
+    try:
+        import mlx_whisper  # noqa: F401
+        pkg = True
+    except Exception:
+        pkg = False
+    ok = pkg and asr_present()
+    return {"id": "asr", "name": "Transcription (speech to speech)", "ok": ok, "optional": True,
+            "detail": "whisper-large-v3-turbo ready: Speak like the voice works" if ok
+            else "optional: needed only for Speak like the voice", "size": "~1.6 GB",
+            "command": None if ok else ("download the transcription model from huggingface.co" if pkg
+                                        else "pip install mlx-whisper, then download the model")}
 
 
 @app.get("/api/setup")
@@ -173,13 +194,16 @@ def setup_status():
              "detail": "multilingual model ready: Hindi, Spanish, Chinese and 19 more" if mtl_weights_present()
              else "optional: needed only to speak languages other than English", "size": "~2.2 GB",
              "command": None if mtl_weights_present() else "download the multilingual model from huggingface.co"},
-            {"id": "ffmpeg", "name": "ffmpeg (for MP3)", "ok": bool(ff) and audio.has_mp3lame(ff),
+            asr_item(),
+            {"id": "ffmpeg", "name": "ffmpeg (reads audio files, MP3)", "ok": bool(ff) and audio.has_mp3lame(ff),
              "detail": ff or "not found", "size": "~60 MB", "command": None if ff else "brew install ffmpeg"},
         ],
         "engine": {"state": engine.state, "error": engine.error, "device": str(engine.device) if engine.device else None,
                    "load_seconds": engine.load_seconds},
         "settings": {"consent": bool(s.get("consent")), "watermark_ack": bool(s.get("watermark_ack")),
-                     "voice_source": s.get("voice_source"), "language": s.get("language", DEFAULT_LANGUAGE)},
+                     "voice_source": s.get("voice_source"), "language": s.get("language", DEFAULT_LANGUAGE),
+                     "tts_voice": s.get("tts_voice", "me"), "sts_voice": s.get("sts_voice", "me"),
+                     "sts_mode": s.get("sts_mode", "timing")},
         "installs": installs,
     }
 
@@ -194,7 +218,7 @@ def setup_install(item: str = Form(...), confirm: bool = Form(False)):
     if installs.get(item, {}).get("state") == "running":
         return installs[item]
     env = dict(os.environ)
-    if item in ("weights", "mtl_weights"):
+    if item in ("weights", "mtl_weights", "asr"):
         env.pop("HF_HUB_OFFLINE", None)  # the approved model download is the only network use
     rec = installs[item] = {"state": "running", "log": "", "command": " ".join(cmd)}
 
@@ -396,12 +420,13 @@ def del_preset(pid: str):
 # ---------------- generation ----------------
 @app.post("/api/generate")
 def generate(text: str = Form(""), params: str = Form("{}"), preview: bool = Form(False), target: float = Form(0),
-             language: str = Form(DEFAULT_LANGUAGE)):
+             language: str = Form(DEFAULT_LANGUAGE), voice: str = Form("me")):
     """target = length in seconds (5-30) or 0 for 'speak the whole text'. A preview always has a
-    target (default 5 s) and is built from the built-in preview passage."""
-    prof = profile()
-    if not prof["ready"]:
-        raise HTTPException(400, f"Record at least {MIN_TAKES} takes first.")
+    target (default 5 s) and is built from the built-in preview passage.
+    voice = "me" (the recorded/uploaded profile) or a clip id from Your voices."""
+    from . import voices
+
+    vref, sref = voices.ref_paths(voice)
     if target and not TARGET_MIN <= target <= TARGET_MAX:
         raise HTTPException(400, f"Length must be between {TARGET_MIN:g} and {TARGET_MAX:g} seconds.")
     lang = language
@@ -418,13 +443,14 @@ def generate(text: str = Form(""), params: str = Form("{}"), preview: bool = For
     if len(text) > 5000:
         raise HTTPException(400, "That's a lot of text. Please keep it under 5,000 characters per run.")
     p = GenParams.from_dict(json.loads(params))
-    vref, sref = take_path(prof["voice_take"]), take_path(prof["style_take"])
+    jupdate(SETTINGS, {}, lambda st: st.update(tts_voice=voice))
     jid = uuid.uuid4().hex[:10]
     n = len(split_text(text, lang))
     job = jobs[jid] = {"id": jid, "state": "queued", "done": 0, "total": n, "elapsed": 0.0,
                        "estimate": engine.estimate_seconds(text, tgt, lang) + (40 if engine.state != "ready" else 0)
                        + (10 if lang != "en" and engine.mtl is None else 0),
-                       "preview": preview, "text": text, "target": tgt, "params": p.__dict__, "language": lang}
+                       "preview": preview, "text": text, "target": tgt, "params": p.__dict__, "language": lang,
+                       "voice": voice}
 
     def run():
         try:
@@ -538,4 +564,19 @@ def _warm():
         engine.load_async()  # warm the model in the background so the first Preview is quick
 
 
+from . import sts, voices  # noqa: E402  (they import this module: engine, DATA, helpers)
+
+@app.middleware("http")
+async def _no_stale_ui(request, call_next):
+    """The macOS app's WKWebView kept serving a cached old index.html/app.js after an update (it reuses
+    responses with Last-Modified without asking). no-cache = always revalidate (ETag), so a rebuilt app
+    shows its new UI."""
+    resp = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+app.include_router(voices.router)
+app.include_router(sts.router)
 app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")

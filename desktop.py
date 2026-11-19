@@ -121,6 +121,32 @@ class DesktopApi:
         self._saved.add(str(dst))
         return {"path": str(dst), "name": dst.name, "folder": str(dst.parent), "bytes": dst.stat().st_size}
 
+    def save_sts_export(self, output_id: str, fmt: str, bitrate: int, filename: str):
+        """Same as save_export, for a Speech to speech result."""
+        import webview
+
+        from app import server, sts
+
+        fmt = fmt if fmt in server.EXPORT_TYPES else "wav"
+        name = server.export_name(filename, fmt)
+        settings = server.jload(server.SETTINGS, {})
+        start = settings.get("export_dir") or str(Path.home() / "Desktop")
+        if not Path(start).is_dir():
+            start = str(Path.home())
+        res = self._window.create_file_dialog(webview.SAVE_DIALOG, directory=start, save_filename=name)
+        if not res:
+            return {"cancelled": True}
+        dst = Path(res if isinstance(res, str) else res[0]).expanduser()
+        if dst.suffix.lower() != "." + fmt:
+            dst = dst.with_name(dst.name + "." + fmt)
+        try:
+            sts.render_export(output_id, fmt, int(bitrate), dst)
+        except Exception as e:
+            return {"error": getattr(e, "detail", None) or str(e)}
+        server.jupdate(server.SETTINGS, {}, lambda st: st.update(export_dir=str(dst.parent)))
+        self._saved.add(str(dst))
+        return {"path": str(dst), "name": dst.name, "folder": str(dst.parent), "bytes": dst.stat().st_size}
+
     def reveal(self, path: str):
         if path in self._saved and Path(path).exists():
             import subprocess
@@ -241,10 +267,15 @@ def main():
                 out["error"] = repr(e)
             (ROOT / "data").mkdir(exist_ok=True)
             (ROOT / "data" / "selftest.json").write_text(json.dumps(out, indent=1))
-            for spec in filter(None, os.environ.get("VCS_SELFTEST_SHOTS", "").split(",")):
+            shots = list(filter(None, os.environ.get("VCS_SELFTEST_SHOTS", "").split(",")))
+            for _ in range(180 if shots else 0):  # screenshots: wait until the engine-loading overlay is gone
+                if window.evaluate_js("!document.querySelector('#boot') || document.querySelector('#boot').hidden"):
+                    break
+                time.sleep(0.5)
+            for spec in shots:
                 # spec = name:screen:theme   e.g. studio_dark:studio:dark
                 name, screen, theme = spec.split(":")
-                window.evaluate_js(f"applyTheme('{theme}'); if (!document.querySelector('.tab[data-screen={screen}]').disabled) show('{screen}'); true")
+                window.evaluate_js(f"applyTheme('{theme}'); (() => {{ const t = document.querySelector('.tab[data-screen={screen}]'); if (!t || !t.disabled) show('{screen}'); }})(); true")
                 time.sleep(1.5)
                 snapshot(window, ROOT / "tests" / "screenshots" / f"{name}.png")
                 time.sleep(1.0)

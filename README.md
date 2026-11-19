@@ -1,10 +1,15 @@
 # Voice Clone Studio
 
-A local Mac app that clones your voice. Record a few short samples (or drop in a recording you already have), type some text, and hear it spoken back in your own voice. Tune how it sounds, then save it as WAV or MP3.
+A local Mac app for cloned voices, with two modes:
+
+- **Text to speech:** type anything and hear it spoken in one of your voices.
+- **Speech to speech:** give it a whole recording (even 20 minutes or more) and it comes out in another voice.
+
+Voices live in one library, **Your voices**. *My voice* is built from a few short recordings of you (or a recording you already have), and you can add any number of 10–30 s clips of other voices you have permission to use. Save results as WAV or MP3.
 
 Everything runs on your Mac using the Apple Silicon GPU. Nothing is uploaded, and the server listens only on `127.0.0.1`.
 
-![Studio screen](docs/screenshots/studio.png)
+![Text to speech](docs/screenshots/studio.png)
 
 ## What it is
 
@@ -19,23 +24,30 @@ Every clip carries Chatterbox's inaudible **Perth watermark**, so detection tool
 - **Or skip recording:** upload any WAV or MP3 of one person talking. The app cuts it into clean clips, drops parts that sound like a different speaker, and takes you straight to the Studio.
 - **Controls that really work:** every slider was measured to change the output (see the [table below](#controls)). There are no placebo sliders.
 - **Honest audio:** all voice changes happen *before* generation. The generated speech is never pitch-shifted or run through effects afterwards.
+- **Speech to speech, two ways:** *Keep original timing* changes only the voice, so the result stays in sync with video. *Speak like the voice* re-speaks the words with the chosen voice's own pace and delivery.
 - **23 languages:** English plus Hindi, Spanish, French, German, Chinese, Japanese, Arabic and 15 more, in your own voice (optional extra download).
 - **Choose the length:** speak your whole text, or aim for 5–30 seconds. The app picks whole sentences and never time-stretches the audio.
 - **Export:** WAV (24 kHz, 16-bit) or MP3 (128–320 kbps), saved wherever you choose.
 
 ## Screenshots
 
-| Setup: choose where the voice comes from | Record: guided scripts with a quality check |
+| Setup and permissions | My voice: record it or use a recording you have |
 |---|---|
-| ![Setup](docs/screenshots/setup.png) | ![Record](docs/screenshots/record.png) |
+| ![Setup and permissions](docs/screenshots/setup.png) | ![My voice](docs/screenshots/myvoice.png) |
 
-| Voice: pick the takes the clone uses | Studio in dark mode |
+| Record: guided scripts with a quality check | |
+|---|---|
+| ![Record](docs/screenshots/record.png) | |
+
+| My voice: pick the takes the clone uses | Text to speech in dark mode |
 |---|---|
 | ![Voice](docs/screenshots/voice.png) | ![Studio, dark mode](docs/screenshots/studio_dark.png) |
 
-| Studio speaking Hindi |
-|---|
-| ![Studio with Hindi selected](docs/screenshots/studio_hindi.jpg) |
+| Speech to speech: a recording, a voice, and how it should speak | Text to speech speaking Hindi |
+|---|---|
+| ![Speech to speech](docs/screenshots/sts.png) | ![Text to speech with Hindi selected](docs/screenshots/studio_hindi.jpg) |
+
+**Loading screen.** While the speech models load into memory (about 15–40 s after the app opens), an overlay plays a short loop: typed words turning into a waveform (text to speech), then one voice's waveform passing through a swap into another (speech to speech). Videos, rendered frame by frame at 1920×1080, 60 fps: [light](docs/boot_overlay_light.mp4) · [dark](docs/boot_overlay_dark.mp4) (`node tests/record_boot_video.mjs <port> light|dark`).
 
 *Screenshots come from the automated UI test and use synthetic macOS `say` voices and a simulated microphone.*
 
@@ -50,6 +62,7 @@ Every clip carries Chatterbox's inaudible **Perth watermark**, so detection tool
 | Python packages from `requirements.txt`: `chatterbox-tts` 0.1.7 (pulls PyTorch 2.6, torchaudio, transformers, librosa, gradio, which is never imported), FastAPI, uvicorn, python-multipart, pywebview 6.2.1 (only for the macOS app) | PyPI | ~1 GB in `.venv` |
 | Chatterbox model weights (`ResembleAI/chatterbox`) | huggingface.co | ~3.2 GB in `~/.cache/huggingface` |
 | *Optional:* multilingual model for the 22 languages besides English (`t3_mtl23ls_v2.safetensors` + tokenizer files, same repo) | huggingface.co | ~2.2 GB |
+| *Optional:* local transcription for *Speak like the voice*: `mlx-whisper` 0.4.3 (+ `mlx`, `mlx-metal`, `tiktoken`, `more-itertools`) and the model `mlx-community/whisper-large-v3-turbo` | PyPI (~48 MB) and huggingface.co (1.6 GB) | ~1.7 GB |
 | Node.js (only to run the headless-Chrome UI test) | [nodejs.org](https://nodejs.org) | optional |
 
 ## Install
@@ -73,6 +86,13 @@ HF_HUB_DISABLE_TELEMETRY=1 .venv/bin/python -c "from huggingface_hub import hf_h
 
 ```bash
 HF_HUB_DISABLE_TELEMETRY=1 .venv/bin/python -c "from huggingface_hub import hf_hub_download as d; [d('ResembleAI/chatterbox', f) for f in ['t3_mtl23ls_v2.safetensors','grapheme_mtl_merged_expanded_v1.json','Cangjie5_TC.json']]"
+```
+
+**Speak like the voice (optional):** install the transcription package, then fetch its model (Setup → **Transcription** does the download after you confirm):
+
+```bash
+uv pip install --python .venv/bin/python mlx-whisper==0.4.3
+HF_HUB_DISABLE_TELEMETRY=1 .venv/bin/python -c "from huggingface_hub import hf_hub_download as d; [d('mlx-community/whisper-large-v3-turbo', f) for f in ['config.json','weights.safetensors']]"
 ```
 
 After that, the app runs fully offline (`HF_HUB_OFFLINE=1`).
@@ -105,26 +125,24 @@ The app is a native window (WKWebView via pywebview) that starts the same backen
 
 ## How to use it
 
-1. **Setup.** Check that everything shows *Ready*, acknowledge the watermark notice, and confirm the voice is yours (or that you have the speaker's permission). Then choose where the voice comes from:
-   - **Record my voice** goes on to steps 2 and 3.
-   - **Use a recording I have:** choose a WAV or MP3 (M4A, FLAC and OGG also work) and go **straight to the Studio**.
-     - You need at least 3 s of speech, and 10 s or more sounds closest. Under 30 MB is suggested, and only the first 10 minutes are used.
-     - The file is cut at pauses into up to 6 clips. Parts that sound like a different speaker are left out, and the clearest clip becomes the voice.
-2. **Record.** Read six short scripts (explaining, hype, deadpan, question, reaction, story), about 15 s each. Three good takes are enough to continue.
-   - Run the 2-second room-noise check first.
-   - Press **Space** to start and stop.
-   - Each take gets a score with tips about clipping, noise, level, amount of speech or echo.
-   - Audio is captured raw at 48 kHz, with echo cancellation, noise suppression and auto gain all off.
-3. **Voice.** Choose which take sets the **voice** and which sets the **style**. The best-scoring take is picked by default.
-4. **Studio.**
-   - Pick a **Language** (English by default). The other 22 languages appear once the multilingual model is downloaded. Your voice can come from a recording in any language, but a recording in the target language usually sounds most natural.
-   - Type what your voice should say.
-   - Choose **Whole text** or **Set length** (5–30 s).
-   - Press **Preview** for a quick built-in passage, or **Generate** for your text.
-   - Adjust the controls or pick a preset (*Close to me*, *Narrator*, *Hype*, or one you saved).
-   - Use **Save as…** to export. The macOS app opens a native Save dialog, and Chrome/Edge open a Save picker.
+The sidebar has **Text to speech**, **Speech to speech**, **Your voices** and **Setup and permissions**.
 
-Your takes, presets and settings live in `data/`. It's created at runtime and is never committed.
+1. **Setup and permissions.** Check that everything shows *Ready*, acknowledge the watermark notice, and confirm you'll only use voices you have the right to use. That's all this page holds.
+2. **Your voices.**
+   - **My voice** (optional; you can use voice clips only). Choose where it comes from:
+     - **Record my voice** leads to *Record takes* and *Choose takes*.
+     - **Use a recording I have:** choose a WAV or MP3 (M4A, FLAC and OGG also work). At least 3 s of speech, 10 s or more sounds closest; only the first 10 minutes are used. The file is cut at pauses into up to 6 clips, parts that sound like a different speaker are left out, and the clearest clip becomes the voice.
+   - **My voice → Record takes:** six short scripts (explaining, hype, deadpan, question, reaction, story), about 15 s each; three good takes are enough. Run the 2-second room check first, press **Space** to start and stop, and each take gets a score with tips. Audio is captured raw at 48 kHz.
+   - **My voice → Choose takes:** which take sets the *voice* and which the *style*.
+   - **Add a voice clip:** 10–30 s of one person talking, no music. Only the first 30 s of speech are kept. Click a clip to hear it; × removes it.
+3. **Text to speech.** Pick a **Voice** and a **Language**, type the text, choose **Whole text** or **Set length** (5–30 s), then **Preview** or **Generate**. Adjust the controls or pick a preset, and **Save as…** to export.
+4. **Speech to speech.** Drop in a recording, pick a voice, and choose how it should speak:
+   - **Keep original timing:** only the voice changes. The rhythm, pauses and emphasis stay the original speaker's, and the result has exactly the original length.
+   - **Speak like the voice:** the recording is transcribed on this Mac and spoken again with the voice's own pace and delivery. The length changes, and it is about 4× slower to make.
+
+   **Preview first part** converts the first ~20 s; **Convert whole recording** does all of it, with progress and Cancel. The result player's **New voice / Original** switch compares the two at the same moment.
+
+Your takes, voices, presets and settings live in `data/`. It's created at runtime and is never committed.
 
 ## Controls
 
@@ -132,7 +150,7 @@ All changes happen **before** generation, in the model's conditioning.
 
 | Control | Range | What it changes |
 |---|---|---|
-| Similarity to my voice | 50–100 % | Blends your speaker embeddings and acoustic prompt with a neutral built-in voice. |
+| Similarity to the voice | 50–100 % | Blends the voice's speaker embeddings and acoustic prompt with a neutral built-in voice. |
 | Expressiveness | 0.25–1.5 | Chatterbox `exaggeration` (emotion intensity). |
 | Pacing | 0.2–0.8 | `cfg_weight`: lower is slower and more deliberate. |
 | Voice depth | −3…+3 semitones | Re-tunes the **reference recording** before cloning (plain resampling). The output itself is never pitch-shifted. |
@@ -170,6 +188,38 @@ In Hindi, Pacing and Expressiveness change the output only a little, and the Stu
 
 A 10 s preview in each of the 23 languages (`tests/languages_test.py all`, synthetic English reference voice) came out between 8.4 and 12.1 s, with similarity 0.91–0.95 and no degenerate chunks. On a language's first run, its starting pace guess can be off by a second or two; the estimate is re-learned after each generation.
 
+## Speech to speech
+
+*Keep original timing* uses Chatterbox's speech-to-speech path. The S3 tokenizer turns the original speech into speech tokens, and S3Gen renders them in the chosen voice. Those tokens carry what is said **and how**: rhythm, pauses and intonation. So the voice changes, but the delivery stays the original speaker's. The voice change happens at the conditioning stage, with no pitch shifting or vocoder effects afterwards.
+
+How a long file is handled:
+
+- It is cut into pieces of about 20 s (8–30 s), only at pauses. Pauses of 2 s or more stay silent and aren't sent to the model.
+- Each piece goes back at its exact original time, so the output has the original length to the sample. Each piece keeps the original's loudness (a plain gain).
+
+*Speak like the voice* generates the speech again instead:
+
+1. The recording is transcribed locally (`whisper-large-v3-turbo` via `mlx-whisper`, on the Apple GPU).
+2. Each sentence is spoken by the text-to-speech engine, with the voice clip as both the voice and the speaking-style prompt.
+3. The voice's speaking pace is measured, and the *pacing* setting (`cfg_weight`) is steered sentence by sentence toward it.
+4. Between sentences it pauses like the voice does. Long pauses in the original (1.5 s or more) are kept, so paragraphs survive.
+
+Measured (`tests/changer_test.py`, `tests/restyle_test.py`, synthetic voices, Apple Silicon GPU):
+
+| | Original vs voice | Keep original timing | Speak like the voice |
+|---|---|---|---|
+| Voice match (VoiceEncoder similarity) | 0.67–0.68 | 0.90 (20 min, lowest part 0.82) | 0.96–0.97 |
+| Length | | identical, long pauses kept | changes with the voice's pace |
+| Speaking pace, fast voice (21.8 chars/s; original 17.8) | | 17.8 (original's) | **22.2** |
+| Speaking pace, slow voice (15.3 chars/s; original 17.8) | | 17.8 (original's) | 17.3 (pacing setting at its minimum) |
+| Time for a 20-minute recording | | 7–13 min (10–25 s clip) | about 40 min |
+
+- **Reference length:** a longer clip sounds closer in *Keep original timing* (5 s → 0.885, 10 s → 0.896, 20 s → 0.910, 30 s → 0.922) but makes each piece slower. The app uses up to 30 s of speech.
+- **Voice match measures the sound of the voice, not its rhythm.** That's why *Keep original timing* can score 0.90 and still sound like the original speaker's delivery.
+- **No knobs, on purpose:** flow-matching steps (4, 10, 20) made no measurable difference, so there is no quality slider.
+
+Limits: in *Keep original timing*, music or noise under the voice comes out garbled, because the model turns everything it hears into speech. *Speak like the voice* follows a faster voice fully but a slower one only partly, and its words come from the transcript, so check names and unusual words. Overlapping speakers all become the one voice. Output is mono, 24 kHz.
+
 ## Project layout
 
 ```
@@ -182,8 +232,12 @@ A 10 s preview in each of the 23 languages (`tests/languages_test.py all`, synth
 │   ├── engine.py     # Chatterbox wrapper: conditioning, sentence chunking, length targeting, similarity
 │   ├── audio.py      # take analysis, trimming, upload decoding/splitting, MP3 via ffmpeg
 │   ├── languages.py  # the 23 languages, their preview passages and starting pace
+│   ├── voices.py     # Your voices: My voice + voice clips (/api/voices)
+│   ├── sts.py        # Speech to speech routes: recording upload, convert jobs, export (/api/sts)
+│   ├── converter.py  # Keep original timing: piece planning + voice conversion
+│   ├── restyle.py    # Speak like the voice: transcription + re-speaking with pace steering
 │   └── scripts.py    # the six recording scripts
-├── web/              # index.html, styles.css, app.js, recorder-worklet.js
+├── web/              # index.html, styles.css, app.js, sts.js (voices + speech to speech), recorder-worklet.js
 ├── docs/screenshots/
 └── tests/
 ```
@@ -201,6 +255,8 @@ Then run the tests:
 ```bash
 HF_HUB_OFFLINE=1 .venv/bin/python tests/cli_smoke.py           # take analysis + one generation
 HF_HUB_OFFLINE=1 .venv/bin/python tests/languages_test.py all  # a 10 s preview in each of the 23 languages
+HF_HUB_OFFLINE=1 .venv/bin/python tests/changer_test.py [minutes] # Keep original timing: length, silence, voice match
+HF_HUB_OFFLINE=1 .venv/bin/python tests/restyle_test.py         # Speak like the voice: pace vs a slow and a fast voice
 VCS_DATA=$PWD/data_test PORT=7862 NO_BROWSER=1 ./run.sh &       # test server on a separate data folder
 VCS_DATA=$PWD/data_test PORT=7862 tests/api_e2e.sh             # takes → previews → exports (ffprobe)
 VCS_DATA=$PWD/data_test PORT=7862 .venv/bin/python tests/upload_e2e.py
